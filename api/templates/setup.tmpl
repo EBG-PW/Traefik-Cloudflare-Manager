@@ -1,0 +1,183 @@
+{{define "setup.tmpl"}}
+<!doctype html>
+<html>
+<head>
+  <title>Setup</title>
+  {{template "head" .}}
+</head>
+<body>
+<div class="page">
+  {{template "navbar" .}}
+  <main class="page-wrapper">
+    <div class="page-header d-print-none">
+      <div class="container-xl page-shell">
+        <div class="row g-2 align-items-center">
+          <div class="col">
+            <h1 class="page-title">First run setup</h1>
+            <div class="text-secondary">Cloudflare DNS, ACME, Traefik, and the manager route are prepared in one guided flow.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page-body">
+      <div class="container-xl page-shell">
+        {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
+
+        <div class="row row-cards">
+          <div class="col-lg-7">
+            <form id="setup-form" class="card">
+              <div class="card-header">
+                <h2 class="card-title">Connection details</h2>
+              </div>
+              <div class="card-body">
+                <div class="row g-3">
+                  <div class="col-md-6">
+                    <label class="form-label">Cloudflare API token</label>
+                    <input class="form-control" name="cloudflare_token" type="password" autocomplete="off" required>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label">ACME email</label>
+                    <input class="form-control" name="acme_email" type="email" required>
+                  </div>
+                  <div class="col-md-4">
+                    <label class="form-label">Domain</label>
+                    <input class="form-control" name="domain" value="{{.Domain}}" placeholder="example.com" required>
+                  </div>
+                  <div class="col-md-4">
+                    <label class="form-label">Traefik server IP</label>
+                    <input class="form-control" name="server_ip" value="{{.ServerIP}}" placeholder="203.0.113.10" required>
+                  </div>
+                  <div class="col-md-4">
+                    <label class="form-label">Proxy mode</label>
+                    <select class="form-select" name="mode" id="mode">
+                      <option value="internal">Internal: iproxy / iproxym</option>
+                      <option value="external">External: proxy / proxym</option>
+                    </select>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label">Traefik web UI host</label>
+                    <input class="form-control" name="traefik_host" id="traefik_host" value="{{.TraefikHost}}" placeholder="iproxy.example.com" required>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label">Manager app host</label>
+                    <input class="form-control" name="manager_host" id="manager_host" value="{{.ManagerHost}}" placeholder="iproxym.example.com" required>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label">Traefik username</label>
+                    <input class="form-control" name="username" autocomplete="username" required>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label">Traefik password</label>
+                    <input class="form-control" name="password" type="password" autocomplete="new-password" minlength="8" required>
+                  </div>
+                </div>
+              </div>
+              <div class="card-footer d-flex justify-content-between align-items-center">
+                <div class="text-secondary" id="setup-summary">Ready to start.</div>
+                <button class="btn btn-primary" id="setup-submit" type="submit">Set up Traefik</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="col-lg-5">
+            <div class="card status-panel" id="setup-status-card">
+              <div class="card-header">
+                <h2 class="card-title">Setup state</h2>
+              </div>
+              <div class="card-body">
+                <div class="d-flex align-items-center gap-3 mb-3">
+                  <div class="spinner-border text-blue d-none" id="setup-spinner"></div>
+                  <div>
+                    <div class="h3 mb-1" id="setup-state">Waiting</div>
+                    <div class="text-secondary" id="setup-message">Submit the form to begin.</div>
+                  </div>
+                </div>
+                <div class="setup-log" id="setup-log">No setup work has started yet.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const mode = document.getElementById('mode');
+const domain = document.querySelector('[name=domain]');
+const th = document.getElementById('traefik_host');
+const mh = document.getElementById('manager_host');
+const form = document.getElementById('setup-form');
+const button = document.getElementById('setup-submit');
+const card = document.getElementById('setup-status-card');
+const spinner = document.getElementById('setup-spinner');
+const state = document.getElementById('setup-state');
+const message = document.getElementById('setup-message');
+const logBox = document.getElementById('setup-log');
+const summary = document.getElementById('setup-summary');
+
+function fillHosts() {
+  const d = domain.value.trim();
+  if (!d) return;
+  if (mode.value === 'external') {
+    th.value = 'proxy.' + d;
+    mh.value = 'proxym.' + d;
+  } else {
+    th.value = 'iproxy.' + d;
+    mh.value = 'iproxym.' + d;
+  }
+}
+
+function renderJob(job) {
+  state.textContent = job.state;
+  message.textContent = job.message || '';
+  summary.textContent = job.message || '';
+  logBox.textContent = (job.log || []).join('\n') || 'Working...';
+  card.classList.toggle('pending', job.state === 'running');
+  card.classList.toggle('ready', job.state === 'done');
+  spinner.classList.toggle('d-none', job.state !== 'running');
+}
+
+async function pollSetup(id) {
+  const response = await fetch('/setup/status?id=' + encodeURIComponent(id));
+  const job = await response.json();
+  renderJob(job);
+  if (job.state === 'done') {
+    button.disabled = false;
+    button.textContent = 'Open manager';
+    setTimeout(() => window.location.href = job.redirect_url, 600);
+    return;
+  }
+  if (job.state === 'error') {
+    button.disabled = false;
+    button.textContent = 'Try again';
+    return;
+  }
+  setTimeout(() => pollSetup(id), 1500);
+}
+
+mode.addEventListener('change', fillHosts);
+domain.addEventListener('change', fillHosts);
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  button.disabled = true;
+  button.textContent = 'Setting up...';
+  spinner.classList.remove('d-none');
+  card.classList.add('pending');
+  logBox.textContent = 'Starting setup...';
+  const response = await fetch('/setup/start', { method: 'POST', body: new FormData(form) });
+  const job = await response.json();
+  if (!response.ok) {
+    renderJob({ state: 'error', message: job.error || 'Setup could not start.', log: [job.error || 'Setup could not start.'] });
+    button.disabled = false;
+    button.textContent = 'Try again';
+    return;
+  }
+  renderJob(job);
+  pollSetup(job.id);
+});
+</script>
+</body>
+</html>
+{{end}}

@@ -1,0 +1,796 @@
+{{define "dashboard.tmpl"}}
+<!doctype html>
+<html>
+<head>
+  <title>Dashboard</title>
+  {{template "head" .}}
+</head>
+<body>
+<div class="page">
+  {{template "app_header" .}}
+
+  <main class="page-wrapper">
+    <div class="page-header d-print-none">
+      <div class="container-fluid page-shell">
+        <div class="row g-2 align-items-center">
+          <div class="col">
+            <h1 class="page-title">Proxies</h1>
+            <div class="text-secondary">{{.Config.Domain}} - {{.Config.Mode}} mode</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page-body">
+      <div class="container-fluid page-shell">
+        {{if .Message}}<div class="alert alert-success">{{.Message}}</div>{{end}}
+        {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
+        {{if .Config.LastDeployError}}<div class="alert alert-danger">Last deploy error: {{.Config.LastDeployError}}</div>{{end}}
+
+        <div class="card mb-3">
+          <div class="card-body control-strip">
+            <div>
+              <div class="subheader mb-2">Traefik container</div>
+              <div class="btn-list">
+                <form method="post" action="/traefik/redeploy" id="traefik-start-form" class="{{if .Stats.Available}}d-none{{end}}">
+                  <button class="btn btn-primary" type="submit">Start Traefik</button>
+                </form>
+                <form method="post" action="/traefik/redeploy" id="traefik-redeploy-form" class="{{if not .Stats.Available}}d-none{{end}}">
+                  <button class="btn btn-primary" type="submit">Redeploy Traefik</button>
+                </form>
+                <form method="post" action="/traefik/stop" id="traefik-stop-form" class="{{if not .Stats.Available}}d-none{{end}}" data-manager-host="{{.Config.ManagerHost}}">
+                  <button class="btn btn-outline-danger" type="submit">Stop Traefik</button>
+                </form>
+                <span class="badge bg-secondary-lt {{if .Stats.Available}}d-none{{end}}" id="traefik-not-running">not running</span>
+              </div>
+            </div>
+
+            <div class="metric-strip {{if not .Stats.Available}}d-none{{end}}" id="metric-strip">
+              <div class="metric-pill">
+                <div class="subheader">CPU</div>
+                <div class="metric-value" id="stat-cpu">{{if .Stats.Available}}{{printf "%.1f" .Stats.CPU}}%{{else}}-{{end}}</div>
+                <div class="text-secondary">last 60 seconds</div>
+                <div class="metric-graph">
+                  <div class="text-secondary mb-1">CPU history</div>
+                  <div class="text-secondary small">Y: percent, X: last 60s</div>
+                  <canvas id="graph-cpu" width="240" height="112"></canvas>
+                </div>
+              </div>
+              <div class="metric-pill">
+                <div class="subheader">Memory</div>
+                <div class="metric-value" id="stat-memory">{{if .Stats.Available}}{{bytes .Stats.Memory}}{{else}}-{{end}}</div>
+                <div class="text-secondary" id="stat-memory-limit">{{if .Stats.Available}}of {{bytes .Stats.MemLimit}}{{else}}{{.Stats.Error}}{{end}}</div>
+                <div class="metric-graph">
+                  <div class="text-secondary mb-1">Memory history</div>
+                  <div class="text-secondary small">Y: bytes, X: last 60s</div>
+                  <canvas id="graph-memory" width="240" height="112"></canvas>
+                </div>
+              </div>
+              <div class="metric-pill">
+                <div class="subheader">Network</div>
+                <div><strong id="stat-net-rx">-</strong> in</div>
+                <div><strong id="stat-net-tx">-</strong> out</div>
+                <div class="metric-graph">
+                  <div class="text-secondary mb-1">Network rate history</div>
+                  <div class="text-secondary small">Blue in, orange out. Y: B/s, X: last 60s</div>
+                  <canvas id="graph-network" width="240" height="112"></canvas>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="row row-cards mt-1">
+          <div class="col-xl-4 col-xxl-3">
+            <div class="card">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <h2 class="card-title" id="proxy-form-title">Add HTTPS proxy</h2>
+                <label class="form-check form-switch m-0">
+                  <input class="form-check-input" type="checkbox" id="load_balancer_toggle" name="load_balancer">
+                  <span class="form-check-label">Loadbalance</span>
+                </label>
+              </div>
+              <div class="card-body">
+                <form id="proxy-form">
+                  <input type="hidden" name="load_balancer" id="load_balancer_value" value="false">
+                  <div class="mb-3">
+                    <label class="form-label">Domain</label>
+                    <input class="form-control" name="host" placeholder="app.{{.Config.Domain}}" required>
+                  </div>
+
+                  <div id="single-backend-fields">
+                    <div class="row g-2">
+                      <div class="col-4">
+                        <label class="form-label">Protocol</label>
+                        <select class="form-select" name="protocol">
+                          <option value="http">http</option>
+                          <option value="https">https</option>
+                        </select>
+                      </div>
+                      <div class="col-5">
+                        <label class="form-label">Backend IP</label>
+                        <input class="form-control" name="ip" id="backend_ip" placeholder="10.0.0.10">
+                      </div>
+                      <div class="col-3">
+                        <label class="form-label">Port</label>
+                        <input class="form-control" name="port" type="number" min="1" max="65535" placeholder="8080">
+                      </div>
+                    </div>
+                  </div>
+
+                  <div id="load-balancer-fields" class="d-none">
+                    <div class="mb-3">
+                      <label class="form-label">Strategy</label>
+                      <select class="form-select" name="strategy">
+                        <option value="wrr">Weighted round robin</option>
+                        <option value="p2c">Power of two choices</option>
+                        <option value="hrw">Highest random weight</option>
+                        <option value="leasttime">Least time</option>
+                      </select>
+                    </div>
+                    <label class="form-check mb-3">
+                      <input class="form-check-input" type="checkbox" name="sticky" id="sticky_sessions">
+                      <span class="form-check-label">Sticky sessions cookie</span>
+                    </label>
+                    <div id="backend-list">
+                      <div class="backend-label-row row g-2 text-secondary small">
+                        <div class="col-3">Protocol</div>
+                        <div class="col-4">Backend IP</div>
+                        <div class="col-2">Port</div>
+                        <div class="col-2">Weight</div>
+                        <div class="col-1"></div>
+                      </div>
+                      <div class="backend-row row g-2">
+                        <div class="col-3">
+                          <label class="form-label visually-hidden">Protocol</label>
+                          <select class="form-select backend-protocol">
+                            <option value="http">http</option>
+                            <option value="https">https</option>
+                          </select>
+                        </div>
+                        <div class="col-4">
+                          <label class="form-label visually-hidden">Backend IP</label>
+                          <input class="form-control backend-ip" placeholder="10.0.0.10">
+                        </div>
+                        <div class="col-2">
+                          <label class="form-label visually-hidden">Port</label>
+                          <input class="form-control backend-port" type="number" min="1" max="65535" placeholder="8080">
+                        </div>
+                        <div class="col-2">
+                          <label class="form-label visually-hidden">Weight</label>
+                          <input class="form-control backend-weight" type="number" min="1" max="999" placeholder="1">
+                        </div>
+                        <div class="col-1">
+                          <button class="btn btn-icon btn-outline-danger remove-backend" type="button" title="Remove backend">x</button>
+                        </div>
+                      </div>
+                    </div>
+                    <button class="btn btn-outline-primary btn-sm mt-2" id="add-backend" type="button">Add backend</button>
+                  </div>
+
+                  <label class="form-check mt-3">
+                    <input class="form-check-input" type="checkbox" name="cloudflare_proxy" id="cf_proxy" {{if .LocalWarning}}disabled{{end}}>
+                    <span class="form-check-label">Cloudflare proxy</span>
+                  </label>
+                  <div class="form-hint" id="cf_note">{{if .LocalWarning}}Disabled because the Traefik server IP is private/local.{{end}}</div>
+                  <div class="form-footer">
+                    <button class="btn btn-primary" id="proxy-submit" type="submit">Create proxy</button>
+                    <button class="btn btn-outline-secondary d-none" id="proxy-cancel-edit" type="button">Cancel edit</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-xl-8 col-xxl-9">
+            <div class="card proxy-list-card">
+              <div class="card-header">
+                <h2 class="card-title">Configured proxies</h2>
+              </div>
+              <div class="table-responsive">
+                <table class="table card-table table-vcenter">
+                  <thead>
+                  <tr>
+                    <th>Domain</th>
+                    <th>Target</th>
+                    <th>Added by</th>
+                    <th>State</th>
+                    <th>Cloudflare</th>
+                    <th class="w-fit"></th>
+                  </tr>
+                  </thead>
+                  <tbody id="proxy-table">
+                  {{range .Config.Proxies}}
+                    <tr class="proxy-row {{.Status}} {{if .Paused}}paused{{end}}" data-host="{{.Host}}">
+                      <td><strong>{{.Host}}</strong></td>
+                      <td>{{template "proxy_target" .}}</td>
+                      <td>{{if .CreatedBy}}{{.CreatedBy}}{{else}}-{{end}}</td>
+                      <td>{{template "proxy_state" .}}</td>
+                      <td>{{if .CloudflareProxy}}<span class="badge bg-green-lt">proxied</span>{{else}}<span class="badge bg-secondary-lt">DNS only</span>{{end}}</td>
+                      <td>{{template "proxy_actions" .}}</td>
+                    </tr>
+                  {{else}}
+                    <tr id="empty-proxy-row"><td colspan="6" class="text-secondary">No proxies configured yet.</td></tr>
+                  {{end}}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+{{template "modal_layer" .}}
+<script>
+const serverIPIsLocal = {{if .LocalWarning}}true{{else}}false{{end}};
+const ip = document.getElementById('backend_ip');
+const cb = document.getElementById('cf_proxy');
+const note = document.getElementById('cf_note');
+const proxyForm = document.getElementById('proxy-form');
+const proxyFormTitle = document.getElementById('proxy-form-title');
+const proxySubmit = document.getElementById('proxy-submit');
+const proxyCancelEdit = document.getElementById('proxy-cancel-edit');
+const proxyTable = document.getElementById('proxy-table');
+const lbToggle = document.getElementById('load_balancer_toggle');
+const lbValue = document.getElementById('load_balancer_value');
+const singleFields = document.getElementById('single-backend-fields');
+const lbFields = document.getElementById('load-balancer-fields');
+const backendList = document.getElementById('backend-list');
+const addBackendButton = document.getElementById('add-backend');
+const stickySessions = document.getElementById('sticky_sessions');
+let editingHost = '';
+let proxyCache = new Map();
+
+function privateIP(v) {
+  return /^10\./.test(v) || /^192\.168\./.test(v) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(v) || /^127\./.test(v);
+}
+
+function backendIPs() {
+  if (!lbToggle.checked) return [ip.value];
+  return [...backendList.querySelectorAll('.backend-ip')].map(input => input.value);
+}
+
+function syncCloudflareProxy() {
+  if (!cb) return;
+  if (backendIPs().some(privateIP)) {
+    cb.checked = false;
+    cb.disabled = true;
+    note.textContent = 'Disabled because one backend IP is private/local.';
+  } else if (!serverIPIsLocal) {
+    cb.disabled = false;
+    note.textContent = '';
+  }
+}
+
+function syncLoadBalancerMode() {
+  lbValue.value = lbToggle.checked ? 'true' : 'false';
+  singleFields.classList.toggle('d-none', lbToggle.checked);
+  lbFields.classList.toggle('d-none', !lbToggle.checked);
+  syncCloudflareProxy();
+}
+
+function addBackendRow(backend = {}) {
+  const row = document.createElement('div');
+  row.className = 'backend-row row g-2';
+  row.innerHTML = `<div class="col-3"><label class="form-label visually-hidden">Protocol</label><select class="form-select backend-protocol"><option value="http">http</option><option value="https">https</option></select></div>
+    <div class="col-4"><label class="form-label visually-hidden">Backend IP</label><input class="form-control backend-ip" placeholder="10.0.0.10"></div>
+    <div class="col-2"><label class="form-label visually-hidden">Port</label><input class="form-control backend-port" type="number" min="1" max="65535" placeholder="8080"></div>
+    <div class="col-2"><label class="form-label visually-hidden">Weight</label><input class="form-control backend-weight" type="number" min="1" max="999" placeholder="1"></div>
+    <div class="col-1"><button class="btn btn-icon btn-outline-danger remove-backend" type="button" title="Remove backend">x</button></div>`;
+  backendList.appendChild(row);
+  row.querySelector('.backend-protocol').value = backend.protocol || 'http';
+  row.querySelector('.backend-ip').value = backend.ip || '';
+  row.querySelector('.backend-port').value = backend.port || '';
+  row.querySelector('.backend-weight').value = backend.weight || '';
+  syncCloudflareProxy();
+}
+
+function resetBackendRows(backends = []) {
+  backendList.querySelectorAll('.backend-row').forEach(row => row.remove());
+  const rows = backends.length ? backends : [{ protocol: 'http' }];
+  rows.forEach(addBackendRow);
+}
+
+function collectBackends(formData) {
+  if (!lbToggle.checked) {
+    return [{
+      protocol: formData.get('protocol'),
+      ip: formData.get('ip'),
+      port: Number(formData.get('port'))
+    }];
+  }
+  return [...backendList.querySelectorAll('.backend-row')].map(row => ({
+    protocol: row.querySelector('.backend-protocol').value,
+    ip: row.querySelector('.backend-ip').value,
+    port: Number(row.querySelector('.backend-port').value),
+    weight: Number(row.querySelector('.backend-weight').value || 0)
+  }));
+}
+
+function strategyLabel(strategy) {
+  switch (strategy) {
+  case 'p2c':
+    return 'Power of two choices';
+  case 'hrw':
+    return 'Highest random weight';
+  case 'leasttime':
+    return 'Least time';
+  default:
+    return 'Weighted round robin';
+  }
+}
+
+function escapeHTML(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[char]));
+}
+
+function backendHover(backends) {
+  return `<div class="backend-hover">${backends.map((backend, index) => {
+    const target = `${backend.protocol}://${backend.ip}:${backend.port}`;
+    const weight = backend.weight ? `weight ${backend.weight}` : 'weight default';
+    return `<div class="backend-hover-row"><span>${index + 1}. ${escapeHTML(target)}</span><span class="text-secondary">${escapeHTML(weight)}</span></div>`;
+  }).join('')}</div>`;
+}
+
+function stateBadge(proxy) {
+  if (proxy.paused) return '<span class="badge bg-secondary-lt">paused</span>';
+  if (proxy.status === 'ready') return sslReadyBadge(proxy);
+  if (proxy.status === 'error') return '<span class="badge bg-red-lt">error</span>';
+  return '<span class="badge bg-blue-lt">creating SSL</span>';
+}
+
+function sslReadyBadge(proxy) {
+  if (!proxy.cert_not_after) return '<span class="badge bg-green-lt">SSL ready</span>';
+  const from = formatCertDate(proxy.cert_not_before);
+  const until = formatCertDate(proxy.cert_not_after);
+  const remaining = formatRemaining(proxy.cert_not_after);
+  const issuer = proxy.cert_issuer ? `<div class="cert-hover-row"><span>Issuer</span><span class="text-secondary">${escapeHTML(proxy.cert_issuer)}</span></div>` : '';
+  return `<span class="cert-summary" tabindex="0"><span class="badge bg-green-lt">SSL ready</span><div class="cert-hover">
+    <div class="cert-hover-row"><span>Valid from</span><span class="text-secondary">${escapeHTML(from)}</span></div>
+    <div class="cert-hover-row"><span>Valid until</span><span class="text-secondary">${escapeHTML(until)}</span></div>
+    <div class="cert-hover-row"><span>Remaining</span><span class="text-secondary">${escapeHTML(remaining)}</span></div>
+    ${issuer}
+  </div></span>`;
+}
+
+function formatCertDate(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleString();
+}
+
+function formatRemaining(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  const ms = date.getTime() - Date.now();
+  if (!Number.isFinite(ms)) return '-';
+  if (ms <= 0) return 'expired';
+  const days = Math.floor(ms / 86400000);
+  const hours = Math.floor((ms % 86400000) / 3600000);
+  if (days > 0) return `${days}d ${hours}h`;
+  const minutes = Math.floor((ms % 3600000) / 60000);
+  return `${hours}h ${minutes}m`;
+}
+
+function targetSummary(proxy) {
+  const backends = proxy.backends && proxy.backends.length ? proxy.backends : [{ protocol: proxy.protocol, ip: proxy.ip, port: proxy.port }];
+  if (backends.length === 1) return `${backends[0].protocol}://${backends[0].ip}:${backends[0].port}`;
+  const sticky = proxy.sticky || proxy.strategy === 'sticky' ? ' + sticky sessions' : '';
+  return `<span class="backend-summary" tabindex="0"><strong>${backends.length} backends</strong>${backendHover(backends)}</span><div class="text-secondary small">${strategyLabel(proxy.strategy)}${sticky}</div>`;
+}
+
+function actionButtons(proxy) {
+  const host = escapeHTML(proxy.host);
+  const pauseLabel = proxy.paused ? 'Resume' : 'Pause';
+  const pauseAction = proxy.paused ? 'resume' : 'pause';
+  return `<div class="btn-list flex-nowrap">
+    <button class="btn btn-outline-primary btn-sm" data-action="edit" data-host="${host}">Edit</button>
+    <button class="btn btn-outline-secondary btn-sm" data-action="${pauseAction}" data-host="${host}">${pauseLabel}</button>
+    <button class="btn btn-outline-danger btn-sm" data-action="delete" data-host="${host}">Delete</button>
+  </div>`;
+}
+
+function upsertProxy(proxy) {
+  proxyCache.set(proxy.host, proxy);
+  document.getElementById('empty-proxy-row')?.remove();
+  let row = proxyTable.querySelector(`tr[data-host="${CSS.escape(proxy.host)}"]`);
+  if (!row) {
+    row = document.createElement('tr');
+    row.dataset.host = proxy.host;
+    proxyTable.appendChild(row);
+  }
+  row.className = `proxy-row ${proxy.status || 'creating'} ${proxy.paused ? 'paused' : ''}`;
+  row.innerHTML = `
+    <td><strong>${proxy.host}</strong></td>
+    <td>${targetSummary(proxy)}</td>
+    <td>${proxy.created_by || '-'}</td>
+    <td>${stateBadge(proxy)}</td>
+    <td>${proxy.cloudflare_proxy ? '<span class="badge bg-green-lt">proxied</span>' : '<span class="badge bg-secondary-lt">DNS only</span>'}</td>
+    <td>${actionButtons(proxy)}</td>`;
+}
+
+async function refreshProxies() {
+  let response;
+  try {
+    response = await fetch('/api/proxies');
+  } catch {
+    return;
+  }
+  if (!response.ok) return;
+  const payload = await response.json();
+  const proxies = Array.isArray(payload) ? payload : [];
+  const hosts = new Set(proxies.map(proxy => proxy.host));
+  proxyCache.clear();
+  proxyTable.querySelectorAll('tr.proxy-row').forEach(row => {
+    if (!hosts.has(row.dataset.host)) row.remove();
+  });
+  proxies.forEach(upsertProxy);
+  if (proxies.length === 0 && !document.getElementById('empty-proxy-row')) {
+    proxyTable.innerHTML = '<tr id="empty-proxy-row"><td colspan="6" class="text-secondary">No proxies configured yet.</td></tr>';
+  }
+  if (proxies.some(p => !p.paused && p.status !== 'ready')) {
+    setTimeout(refreshProxies, 3000);
+  }
+}
+
+async function loadProxy(host) {
+  if (proxyCache.has(host)) return proxyCache.get(host);
+  const response = await fetch('/api/proxies');
+  if (!response.ok) return null;
+  const proxies = await response.json();
+  if (!Array.isArray(proxies)) return null;
+  proxies.forEach(proxy => proxyCache.set(proxy.host, proxy));
+  return proxyCache.get(host) || null;
+}
+
+async function startEditProxy(host) {
+  const proxy = await loadProxy(host);
+  if (!proxy) {
+    await window.tcmModal.alert({
+      style: 'error',
+      kind: 'Proxy error',
+      title: 'Proxy was not found',
+      message: `${host} is no longer available in the manager config.`
+    });
+    return;
+  }
+  editingHost = proxy.host;
+  proxyFormTitle.textContent = 'Edit HTTPS proxy';
+  proxySubmit.textContent = 'Save changes';
+  proxyCancelEdit.classList.remove('d-none');
+  proxyForm.elements.host.value = proxy.host || '';
+  const backends = proxy.backends && proxy.backends.length ? proxy.backends : [{ protocol: proxy.protocol, ip: proxy.ip, port: proxy.port }];
+  lbToggle.checked = proxy.load_balancer || backends.length > 1;
+  proxyForm.elements.strategy.value = proxy.strategy || 'wrr';
+  stickySessions.checked = !!proxy.sticky || proxy.strategy === 'sticky';
+  resetBackendRows(backends);
+  if (!lbToggle.checked) {
+    proxyForm.elements.protocol.value = backends[0]?.protocol || 'http';
+    proxyForm.elements.ip.value = backends[0]?.ip || '';
+    proxyForm.elements.port.value = backends[0]?.port || '';
+  }
+  cb.checked = !!proxy.cloudflare_proxy;
+  syncLoadBalancerMode();
+  proxyForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function resetProxyForm() {
+  editingHost = '';
+  proxyFormTitle.textContent = 'Add HTTPS proxy';
+  proxySubmit.textContent = 'Create proxy';
+  proxySubmit.disabled = false;
+  proxyCancelEdit.classList.add('d-none');
+  proxyForm.reset();
+  resetBackendRows([{ protocol: 'http' }]);
+  syncLoadBalancerMode();
+}
+
+async function proxyAction(action, host) {
+  if (action === 'edit') {
+    startEditProxy(host);
+    return;
+  }
+  if (action === 'delete') {
+    const confirmed = await window.tcmModal.confirm({
+      style: 'danger',
+      kind: 'Proxy removal',
+      title: 'Delete proxy?',
+      message: `This removes ${host} from Traefik and deletes its Cloudflare DNS record.`,
+      confirmText: 'Delete proxy'
+    });
+    if (!confirmed) return;
+  }
+  const response = await fetch(`/api/proxies/${encodeURIComponent(host)}/${action}`, { method: 'POST' });
+  if (response.ok) {
+    const data = await response.json();
+    if (data.proxy) upsertProxy(data.proxy);
+    if (action === 'delete') proxyTable.querySelector(`tr[data-host="${CSS.escape(host)}"]`)?.remove();
+  }
+}
+
+function connectStats() {
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${scheme}://${location.host}/api/traefik/stats/ws`);
+  ws.onmessage = (event) => {
+    const stats = JSON.parse(event.data);
+    updateTraefikState(stats.available);
+    if (!stats.available) return;
+    document.getElementById('stat-cpu').textContent = stats.cpu_percent.toFixed(1) + '%';
+    document.getElementById('stat-memory').textContent = stats.memory_human;
+    document.getElementById('stat-memory-limit').textContent = 'of ' + stats.memory_limit_human;
+    document.getElementById('stat-net-rx').textContent = stats.network_rx_rate_human;
+    document.getElementById('stat-net-tx').textContent = stats.network_tx_rate_human;
+    drawMetricGraphs(stats.history || []);
+  };
+  ws.onclose = () => setTimeout(connectStats, 3000);
+}
+
+function updateTraefikState(running) {
+  document.getElementById('metric-strip').classList.toggle('d-none', !running);
+  document.getElementById('traefik-stop-form').classList.toggle('d-none', !running);
+  document.getElementById('traefik-redeploy-form').classList.toggle('d-none', !running);
+  document.getElementById('traefik-start-form').classList.toggle('d-none', running);
+  document.getElementById('traefik-not-running').classList.toggle('d-none', running);
+}
+
+function drawMetricGraphs(history) {
+  drawSingleLine(document.getElementById('graph-cpu'), history.map(s => s.cpu_percent), '#206bc4', 100);
+  const memoryMax = Math.max(...history.map(s => s.memory_limit_bytes || 0), 1);
+  drawSingleLine(document.getElementById('graph-memory'), history.map(s => s.memory_bytes), '#2fb344', memoryMax);
+  drawDualLine(
+    document.getElementById('graph-network'),
+    history.map(s => s.network_rx_bytes_per_sec || 0),
+    history.map(s => s.network_tx_bytes_per_sec || 0),
+    '#206bc4',
+    '#f59f00'
+  );
+}
+
+function drawSingleLine(canvas, values, color, fixedMax) {
+  if (!canvas || values.length === 0) return;
+  resizeCanvasToDisplaySize(canvas);
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  const left = 34;
+  const right = 8;
+  const top = 10;
+  const bottom = 22;
+  const graphWidth = width - left - right;
+  const graphHeight = height - top - bottom;
+  ctx.clearRect(0, 0, width, height);
+  ctx.font = '10px sans-serif';
+  ctx.fillStyle = '#64748b';
+  ctx.fillText('now', width - 26, height - 4);
+  ctx.fillText('-60s', left - 8, height - 4);
+  ctx.strokeStyle = '#e5edf5';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 4; i++) {
+    const y = top + i * (graphHeight / 3);
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(width - right, y);
+    ctx.stroke();
+  }
+  const max = Math.max(fixedMax || 0, ...values, 1);
+  ctx.fillText(shortNumber(max), 2, top + 3);
+  ctx.fillText('0', 22, top + graphHeight);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  values.forEach((value, index) => {
+    const x = values.length === 1 ? width - right : left + index * (graphWidth / (values.length - 1));
+    const y = top + graphHeight - (Math.min(value, max) / max) * graphHeight;
+    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function drawDualLine(canvas, first, second, firstColor, secondColor) {
+  const max = Math.max(...first, ...second, 1);
+  drawSingleLine(canvas, first, firstColor, max);
+  if (!canvas || second.length === 0) return;
+  resizeCanvasToDisplaySize(canvas);
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  const left = 34;
+  const right = 8;
+  const top = 10;
+  const bottom = 22;
+  const graphWidth = width - left - right;
+  const graphHeight = height - top - bottom;
+  ctx.strokeStyle = secondColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  second.forEach((value, index) => {
+    const x = second.length === 1 ? width - right : left + index * (graphWidth / (second.length - 1));
+    const y = top + graphHeight - (Math.min(value, max) / max) * graphHeight;
+    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function shortNumber(value) {
+  if (value >= 1024 * 1024) return Math.round(value / 1024 / 1024) + 'M';
+  if (value >= 1024) return Math.round(value / 1024) + 'K';
+  return Math.round(value).toString();
+}
+
+function resizeCanvasToDisplaySize(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.floor(rect.width * scale));
+  const height = Math.max(1, Math.floor(rect.height * scale));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+}
+
+ip.addEventListener('input', syncCloudflareProxy);
+lbToggle.addEventListener('change', syncLoadBalancerMode);
+backendList.addEventListener('input', syncCloudflareProxy);
+backendList.addEventListener('click', (event) => {
+  const button = event.target.closest('.remove-backend');
+  if (!button) return;
+  if (backendList.querySelectorAll('.backend-row').length > 1) {
+    button.closest('.backend-row').remove();
+  }
+});
+addBackendButton.addEventListener('click', () => addBackendRow());
+proxyCancelEdit.addEventListener('click', resetProxyForm);
+document.getElementById('traefik-stop-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const managerHost = form.dataset.managerHost;
+  const currentHost = location.hostname;
+  const viaManagerDomain = currentHost === managerHost;
+  const confirmed = await window.tcmModal.confirm({
+    style: viaManagerDomain ? 'warning' : 'danger',
+    kind: viaManagerDomain ? 'Connection warning' : 'Container stop',
+    title: 'Stop Traefik?',
+    message: viaManagerDomain
+      ? `You are connected through ${managerHost}.\nStopping Traefik will disconnect this page until Traefik is started again. Saved proxy config and DNS records will remain.`
+      : 'This stops and deletes the Traefik container. Saved proxy config and DNS records will remain.',
+    confirmText: 'Stop Traefik'
+  });
+  if (confirmed) {
+    form.submit();
+  }
+});
+
+proxyForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  proxySubmit.disabled = true;
+  proxySubmit.textContent = editingHost ? 'Saving...' : 'Creating...';
+  const formData = new FormData(proxyForm);
+  const payload = {
+    host: formData.get('host'),
+    protocol: formData.get('protocol'),
+    ip: formData.get('ip'),
+    port: Number(formData.get('port')),
+    load_balancer: lbToggle.checked,
+    strategy: formData.get('strategy') || 'wrr',
+    sticky: formData.get('sticky') === 'on',
+    backends: collectBackends(formData),
+    cloudflare_proxy: formData.get('cloudflare_proxy') === 'on'
+  };
+  const oldHost = editingHost;
+  const response = await fetch(editingHost ? `/api/proxies/${encodeURIComponent(editingHost)}` : '/api/proxies', {
+    method: editingHost ? 'PUT' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  proxySubmit.disabled = false;
+  proxySubmit.textContent = editingHost ? 'Save changes' : 'Create proxy';
+  if (response.ok) {
+    if (oldHost && oldHost !== data.host) {
+      proxyTable.querySelector(`tr[data-host="${CSS.escape(oldHost)}"]`)?.remove();
+      proxyCache.delete(oldHost);
+    }
+    upsertProxy(data);
+    resetProxyForm();
+    refreshProxies();
+  } else {
+    await window.tcmModal.alert({
+      style: 'error',
+      kind: 'Proxy error',
+      title: editingHost ? 'Proxy could not be saved' : 'Proxy could not be created',
+      message: data.error || (editingHost ? 'Proxy could not be saved.' : 'Proxy could not be created.')
+    });
+  }
+});
+
+proxyTable.addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  event.preventDefault();
+  await proxyAction(button.dataset.action, button.dataset.host);
+});
+
+syncLoadBalancerMode();
+refreshProxies();
+connectStats();
+</script>
+</body>
+</html>
+{{end}}
+
+{{define "proxy_target"}}
+{{if .LoadBalancer}}
+<span class="backend-summary" tabindex="0">
+  <strong>{{len .Backends}} backends</strong>
+  <div class="backend-hover">
+    {{range $index, $backend := .Backends}}
+    <div class="backend-hover-row">
+      <span>{{add $index 1}}. {{$backend.Protocol}}://{{$backend.IP}}:{{$backend.Port}}</span>
+      <span class="text-secondary">{{if $backend.Weight}}weight {{$backend.Weight}}{{else}}weight default{{end}}</span>
+    </div>
+    {{end}}
+  </div>
+</span>
+<div class="text-secondary small">{{strategyLabel .Strategy}}{{if or .Sticky (eq .Strategy "sticky")}} + sticky sessions{{end}}</div>
+{{else}}
+{{.Protocol}}://{{.IP}}:{{.Port}}
+{{end}}
+{{end}}
+
+{{define "proxy_state"}}
+{{if .Paused}}
+<span class="badge bg-secondary-lt">paused</span>
+{{else if eq .Status "ready"}}
+<span class="cert-summary" tabindex="0">
+  <span class="badge bg-green-lt">SSL ready</span>
+  {{if not .CertNotAfter.IsZero}}
+  <div class="cert-hover">
+    <div class="cert-hover-row">
+      <span>Valid from</span>
+      <span class="text-secondary">{{certTime .CertNotBefore}}</span>
+    </div>
+    <div class="cert-hover-row">
+      <span>Valid until</span>
+      <span class="text-secondary">{{certTime .CertNotAfter}}</span>
+    </div>
+    <div class="cert-hover-row">
+      <span>Remaining</span>
+      <span class="text-secondary">{{certDuration .CertNotAfter}}</span>
+    </div>
+    {{if .CertIssuer}}
+    <div class="cert-hover-row">
+      <span>Issuer</span>
+      <span class="text-secondary">{{.CertIssuer}}</span>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+</span>
+{{else if eq .Status "error"}}
+<span class="badge bg-red-lt">error</span>
+{{else}}
+<span class="badge bg-blue-lt">creating SSL</span>
+{{end}}
+{{end}}
+
+{{define "proxy_actions"}}
+<div class="btn-list flex-nowrap">
+  <button class="btn btn-outline-primary btn-sm" data-action="edit" data-host="{{.Host}}">Edit</button>
+  {{if .Paused}}
+  <button class="btn btn-outline-secondary btn-sm" data-action="resume" data-host="{{.Host}}">Resume</button>
+  {{else}}
+  <button class="btn btn-outline-secondary btn-sm" data-action="pause" data-host="{{.Host}}">Pause</button>
+  {{end}}
+  <button class="btn btn-outline-danger btn-sm" data-action="delete" data-host="{{.Host}}">Delete</button>
+</div>
+{{end}}

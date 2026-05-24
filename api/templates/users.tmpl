@@ -1,0 +1,130 @@
+{{define "users.tmpl"}}
+<!doctype html>
+<html>
+<head>
+  <title>Users</title>
+  {{template "head" .}}
+</head>
+<body>
+<div class="page">
+  {{template "app_header" .}}
+  <main class="page-wrapper">
+    <div class="page-header d-print-none">
+      <div class="container-fluid page-shell">
+        <div class="row g-2 align-items-center">
+          <div class="col">
+            <h1 class="page-title">Users</h1>
+            <div class="text-secondary">Manage accounts that can open the manager and Traefik dashboard.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page-body">
+      <div class="container-fluid page-shell">
+        {{if .Message}}<div class="alert alert-success">{{.Message}}</div>{{end}}
+        {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
+
+        <div class="row row-cards">
+          <div class="col-lg-4">
+            <div class="card">
+              <div class="card-header">
+                <h2 class="card-title">Add user</h2>
+              </div>
+              <div class="card-body">
+                <form method="post" action="/users">
+                  <div class="mb-3">
+                    <label class="form-label">Username</label>
+                    <input class="form-control" name="username" autocomplete="username" required>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label">Password</label>
+                    <input class="form-control" name="password" type="password" autocomplete="new-password" minlength="8" required>
+                  </div>
+                  <button class="btn btn-primary" type="submit">Create user</button>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-lg-8">
+            <div class="card">
+              <div class="card-header">
+                <h2 class="card-title">Users</h2>
+              </div>
+              <div class="table-responsive">
+                <table class="table card-table table-vcenter">
+                  <thead>
+                  <tr>
+                    <th>Username</th>
+                    <th>Created</th>
+                    <th class="w-fit"></th>
+                  </tr>
+                  </thead>
+                  <tbody>
+                  {{range .Config.Users}}
+                  <tr>
+                    <td><strong>{{.Username}}</strong>{{if eq $.CurrentUser .Username}} <span class="badge bg-blue-lt">current</span>{{end}}</td>
+                    <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+                    <td>
+                      {{if ne $.CurrentUser .Username}}
+                      <form method="post" action="/users/delete" class="user-delete-form" data-username="{{.Username}}">
+                        <input type="hidden" name="username" value="{{.Username}}">
+                        <button class="btn btn-outline-danger btn-sm" type="submit">Delete</button>
+                      </form>
+                      {{end}}
+                    </td>
+                  </tr>
+                  {{end}}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+{{template "modal_layer" .}}
+<script>
+document.querySelectorAll('.user-delete-form').forEach(form => {
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const username = form.dataset.username;
+    const confirmed = await window.tcmModal.confirm({
+      style: 'danger',
+      kind: 'User removal',
+      title: 'Delete user?',
+      message: `User "${username}" will lose access to the manager and Traefik dashboard. Existing proxies created by this user stay configured for audit history.`,
+      confirmText: 'Delete user'
+    });
+    if (confirmed) {
+      form.submit();
+    }
+  });
+});
+</script>
+</body>
+</html>
+{{end}}
+
+{{define "app_header"}}
+<header class="navbar navbar-expand-md d-print-none">
+  <div class="container-fluid page-shell">
+    <div class="navbar-brand">Traefik Cloudflare Manager</div>
+    <div class="navbar-nav">
+      <a class="nav-link" href="/dashboard">Proxies</a>
+      <a class="nav-link" href="/traefik">Traefik</a>
+      <a class="nav-link" href="/users">Users</a>
+    </div>
+    <div class="ms-auto d-flex align-items-center gap-3 flex-wrap">
+      <div class="header-hosts text-secondary">
+        <span>Traefik: <strong>{{.Config.TraefikHost}}</strong></span>
+        <span>Manager: <strong>{{.Config.ManagerHost}}</strong></span>
+      </div>
+      <a class="btn btn-outline-secondary" href="/logout">Logout</a>
+    </div>
+  </div>
+</header>
+{{end}}

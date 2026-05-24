@@ -1,0 +1,402 @@
+{{define "head"}}
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/js/tabler.min.js"></script>
+<style>
+  :root {
+    --tcm-accent: #0f766e;
+  }
+
+  body {
+    background: #f3f6f8;
+  }
+
+  .navbar-brand {
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+
+  .page-shell {
+    max-width: none;
+    width: 100%;
+  }
+
+  .status-panel {
+    border-left: 4px solid transparent;
+  }
+
+  .status-panel.pending,
+  .proxy-row.pending {
+    border-left-color: var(--tblr-blue);
+    background: #eef6ff;
+  }
+
+  .status-panel.ready,
+  .proxy-row.ready {
+    border-left-color: var(--tblr-green);
+  }
+
+  .proxy-row.paused {
+    opacity: .72;
+    background: #f8fafc;
+  }
+
+  .metric-card .h2 {
+    margin-bottom: 0;
+  }
+
+  .control-strip {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .metric-strip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(150px, 1fr));
+    gap: 10px;
+    flex: 1 1 560px;
+  }
+
+  .metric-pill {
+    position: relative;
+    min-height: 74px;
+    border: 1px solid #dbe3ea;
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: #fff;
+  }
+
+  .metric-value {
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.15;
+  }
+
+  .metric-graph {
+    display: none;
+    position: absolute;
+    z-index: 20;
+    left: 0;
+    right: 0;
+    top: calc(100% + 8px);
+    width: 100%;
+    min-width: 100%;
+    padding: 10px;
+    border: 1px solid #ccd6e0;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, .16);
+  }
+
+  .metric-pill:hover .metric-graph {
+    display: block;
+  }
+
+  .metric-graph canvas {
+    width: 100%;
+    height: 112px;
+    display: block;
+  }
+
+  .backend-row + .backend-row {
+    margin-top: 8px;
+  }
+
+  .backend-summary {
+    position: relative;
+    display: inline-block;
+  }
+
+  .cert-summary {
+    position: relative;
+    display: inline-block;
+  }
+
+  .backend-hover,
+  .cert-hover {
+    display: none;
+    position: absolute;
+    z-index: 1090;
+    bottom: calc(100% + 8px);
+    left: 0;
+    min-width: 300px;
+    max-width: min(520px, 70vw);
+    padding: 10px 12px;
+    border: 1px solid #ccd6e0;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, .16);
+    white-space: normal;
+  }
+
+  .cert-hover {
+    min-width: 260px;
+    max-width: min(380px, 70vw);
+  }
+
+  .cert-hover-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .cert-hover-row .text-secondary {
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+
+  .proxy-list-card .table-responsive {
+    overflow: visible;
+  }
+
+  .backend-summary:hover .backend-hover,
+  .backend-summary:focus-within .backend-hover,
+  .cert-summary:hover .cert-hover,
+  .cert-summary:focus-within .cert-hover {
+    display: block;
+  }
+
+  .backend-hover-row,
+  .cert-hover-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid #eef2f6;
+  }
+
+  .backend-hover-row:last-child,
+  .cert-hover-row:last-child {
+    border-bottom: 0;
+  }
+
+  .table td {
+    vertical-align: middle;
+  }
+
+  .w-fit {
+    width: 1%;
+    white-space: nowrap;
+  }
+
+  .setup-log {
+    min-height: 180px;
+    max-height: 300px;
+    overflow: auto;
+    background: #0f172a;
+    color: #dbeafe;
+    border-radius: 6px;
+    padding: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+  }
+
+  .log-output {
+    min-height: 420px;
+    max-height: 68vh;
+    overflow: auto;
+    background: #0f172a;
+    color: #dbeafe;
+    border-radius: 6px;
+    padding: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+  }
+
+  .command-output {
+    min-height: 180px;
+    max-height: 360px;
+  }
+
+  .nav-link.active {
+    font-weight: 700;
+  }
+
+  .header-hosts {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 12px;
+  }
+
+  .backend-label-row {
+    margin-bottom: 4px;
+  }
+
+  .tcm-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1080;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(15, 23, 42, .46);
+  }
+
+  .tcm-modal-backdrop[hidden] {
+    display: none !important;
+  }
+
+  .tcm-modal-card {
+    width: min(520px, 100%);
+    overflow: hidden;
+    border: 1px solid #d8e0e8;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 22px 64px rgba(15, 23, 42, .28);
+  }
+
+  .tcm-modal-accent {
+    height: 5px;
+    background: var(--tblr-blue);
+  }
+
+  .tcm-modal-card.warning .tcm-modal-accent {
+    background: var(--tblr-warning);
+  }
+
+  .tcm-modal-card.danger .tcm-modal-accent,
+  .tcm-modal-card.error .tcm-modal-accent {
+    background: var(--tblr-danger);
+  }
+
+  .tcm-modal-card.info .tcm-modal-accent {
+    background: var(--tblr-blue);
+  }
+
+  .tcm-modal-body {
+    padding: 20px;
+  }
+
+  .tcm-modal-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    margin-bottom: 12px;
+    color: var(--tblr-blue);
+    background: var(--tblr-blue-lt);
+  }
+
+  .tcm-modal-card.warning .tcm-modal-icon {
+    color: #b45309;
+    background: #fff7e6;
+  }
+
+  .tcm-modal-card.danger .tcm-modal-icon,
+  .tcm-modal-card.error .tcm-modal-icon {
+    color: var(--tblr-danger);
+    background: var(--tblr-danger-lt);
+  }
+
+  .tcm-modal-message {
+    white-space: pre-line;
+  }
+
+  @media (max-width: 760px) {
+    .metric-strip {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+{{end}}
+
+{{define "navbar"}}
+<header class="navbar navbar-expand-md d-print-none">
+  <div class="container-xl page-shell">
+    <div class="navbar-brand">Traefik Cloudflare Manager</div>
+  </div>
+</header>
+{{end}}
+
+{{define "modal_layer"}}
+<div class="tcm-modal-backdrop" id="tcm-modal" role="dialog" aria-modal="true" aria-labelledby="tcm-modal-title" hidden>
+  <div class="tcm-modal-card info" id="tcm-modal-card">
+    <div class="tcm-modal-accent"></div>
+    <div class="tcm-modal-body">
+      <div class="tcm-modal-icon" id="tcm-modal-icon">i</div>
+      <div class="subheader" id="tcm-modal-kind">Notice</div>
+      <h3 class="mb-2" id="tcm-modal-title">Confirm action</h3>
+      <p class="text-secondary tcm-modal-message" id="tcm-modal-message"></p>
+      <div class="btn-list justify-content-end mt-4">
+        <button class="btn btn-outline-secondary" type="button" id="tcm-modal-cancel">Cancel</button>
+        <button class="btn btn-primary" type="button" id="tcm-modal-confirm">Continue</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+window.tcmModal = (() => {
+  const root = document.getElementById('tcm-modal');
+  const card = document.getElementById('tcm-modal-card');
+  const icon = document.getElementById('tcm-modal-icon');
+  const kind = document.getElementById('tcm-modal-kind');
+  const title = document.getElementById('tcm-modal-title');
+  const message = document.getElementById('tcm-modal-message');
+  const cancelButton = document.getElementById('tcm-modal-cancel');
+  const confirmButton = document.getElementById('tcm-modal-confirm');
+  let resolver = null;
+
+  const buttonClasses = ['btn-primary', 'btn-warning', 'btn-danger'];
+
+  function close(value) {
+    root.hidden = true;
+    if (resolver) resolver(value);
+    resolver = null;
+  }
+
+  function configureButton(style) {
+    confirmButton.classList.remove(...buttonClasses);
+    if (style === 'warning') {
+      confirmButton.classList.add('btn-warning');
+    } else if (style === 'danger' || style === 'error') {
+      confirmButton.classList.add('btn-danger');
+    } else {
+      confirmButton.classList.add('btn-primary');
+    }
+  }
+
+  function show(options = {}) {
+    const style = options.style || 'info';
+    card.className = `tcm-modal-card ${style}`;
+    kind.textContent = options.kind || (style === 'info' ? 'Notice' : style);
+    title.textContent = options.title || 'Confirm action';
+    message.textContent = options.message || '';
+    confirmButton.textContent = options.confirmText || 'Continue';
+    cancelButton.textContent = options.cancelText || 'Cancel';
+    cancelButton.classList.toggle('d-none', options.cancelText === '');
+    icon.textContent = style === 'warning' ? '!' : (style === 'danger' || style === 'error' ? 'x' : 'i');
+    configureButton(style);
+    root.hidden = false;
+    confirmButton.focus();
+
+    return new Promise(resolve => {
+      resolver = resolve;
+    });
+  }
+
+  cancelButton.addEventListener('click', () => close(false));
+  confirmButton.addEventListener('click', () => close(true));
+  root.addEventListener('click', event => {
+    if (event.target === root) close(false);
+  });
+  document.addEventListener('keydown', event => {
+    if (!root.hidden && event.key === 'Escape') close(false);
+  });
+
+  return {
+    confirm: (options) => show(options),
+    alert: (options) => show({ ...options, cancelText: '', confirmText: options.confirmText || 'OK' })
+  };
+})();
+</script>
+{{end}}

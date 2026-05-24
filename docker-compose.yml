@@ -1,0 +1,13 @@
+services:
+  manager:
+    build: .
+    image: traefik-cloudflare-manager:local
+    restart: unless-stopped
+    ports:
+      - "${TCM_HTTP_PORT:-8080}:8080"
+    volumes:
+      - manager-data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  manager-data:

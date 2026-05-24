@@ -1,0 +1,147 @@
+{{define "traefik.tmpl"}}
+<!doctype html>
+<html>
+<head>
+  <title>Traefik</title>
+  {{template "head" .}}
+</head>
+<body>
+<div class="page">
+  {{template "app_header" .}}
+  <main class="page-wrapper">
+    <div class="page-header d-print-none">
+      <div class="container-fluid page-shell">
+        <div class="row g-2 align-items-center">
+          <div class="col">
+            <h1 class="page-title">Traefik</h1>
+            <div class="text-secondary">{{.Config.TraefikHost}}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page-body">
+      <div class="container-fluid page-shell">
+        {{if .Message}}<div class="alert alert-success">{{.Message}}</div>{{end}}
+        {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
+
+        <div class="row row-cards">
+          <div class="col-xl-7">
+            <div class="card">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <h2 class="card-title">Container logs</h2>
+                <div class="d-flex gap-2 align-items-center">
+                  <select class="form-select form-select-sm" id="log-tail" aria-label="Log lines">
+                    <option value="200">200</option>
+                    <option value="500" selected>500</option>
+                    <option value="1000">1000</option>
+                    <option value="2000">2000</option>
+                    <option value="all">All</option>
+                  </select>
+                  <button class="btn btn-outline-primary btn-sm" type="button" id="refresh-logs">Refresh</button>
+                </div>
+              </div>
+              <div class="card-body">
+                <pre class="log-output" id="traefik-logs">Loading logs...</pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-xl-5">
+            <div class="card">
+              <div class="card-header">
+                <h2 class="card-title">Run command</h2>
+              </div>
+              <div class="card-body">
+                <form id="command-form">
+                  <div class="mb-3">
+                    <label class="form-label">Command</label>
+                    <input class="form-control" id="command-input" name="command" placeholder="traefik version" autocomplete="off" required>
+                  </div>
+                  <button class="btn btn-primary" id="command-submit" type="submit">Run</button>
+                </form>
+              </div>
+              <div class="card-body border-top">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <div class="subheader">Output</div>
+                  <span class="badge bg-secondary-lt" id="command-exit">not run</span>
+                </div>
+                <pre class="log-output command-output" id="command-output"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+{{template "modal_layer" .}}
+<script>
+const logsBox = document.getElementById('traefik-logs');
+const tailSelect = document.getElementById('log-tail');
+const refreshLogsButton = document.getElementById('refresh-logs');
+const commandForm = document.getElementById('command-form');
+const commandInput = document.getElementById('command-input');
+const commandSubmit = document.getElementById('command-submit');
+const commandOutput = document.getElementById('command-output');
+const commandExit = document.getElementById('command-exit');
+
+async function loadLogs() {
+  refreshLogsButton.disabled = true;
+  try {
+    const response = await fetch('/api/traefik/logs?tail=' + encodeURIComponent(tailSelect.value));
+    const data = await response.json();
+    logsBox.textContent = response.ok ? (data.logs || '') : (data.error || 'Could not load logs.');
+    logsBox.scrollTop = logsBox.scrollHeight;
+  } finally {
+    refreshLogsButton.disabled = false;
+  }
+}
+
+commandForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const command = commandInput.value.trim();
+  if (!command) return;
+  const confirmed = await window.tcmModal.confirm({
+    style: 'warning',
+    kind: 'Container command',
+    title: 'Run command?',
+    message: command,
+    confirmText: 'Run command'
+  });
+  if (!confirmed) return;
+  commandSubmit.disabled = true;
+  commandSubmit.textContent = 'Running...';
+  commandExit.textContent = 'running';
+  commandExit.className = 'badge bg-blue-lt';
+  commandOutput.textContent = '';
+  try {
+    const response = await fetch('/api/traefik/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      commandExit.textContent = 'error';
+      commandExit.className = 'badge bg-red-lt';
+      commandOutput.textContent = data.error || 'Command failed.';
+      return;
+    }
+    commandExit.textContent = 'exit ' + data.exit_code;
+    commandExit.className = data.exit_code === 0 ? 'badge bg-green-lt' : 'badge bg-red-lt';
+    commandOutput.textContent = [data.stdout || '', data.stderr || ''].filter(Boolean).join('\n');
+  } finally {
+    commandSubmit.disabled = false;
+    commandSubmit.textContent = 'Run';
+  }
+});
+
+refreshLogsButton.addEventListener('click', loadLogs);
+tailSelect.addEventListener('change', loadLogs);
+loadLogs();
+</script>
+</body>
+</html>
+{{end}}

@@ -1,0 +1,36 @@
+{{define "login.tmpl"}}
+<!doctype html>
+<html>
+<head>
+  <title>Login</title>
+  {{template "head" .}}
+</head>
+<body class="d-flex flex-column">
+<div class="page page-center">
+  <div class="container container-tight py-4">
+    <div class="text-center mb-4">
+      <div class="h2">Traefik Cloudflare Manager</div>
+      <div class="text-secondary">Use the Traefik dashboard credentials.</div>
+    </div>
+    <form class="card card-md" method="post" action="/login">
+      <div class="card-body">
+        <h2 class="card-title text-center mb-4">Login</h2>
+        {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
+        <div class="mb-3">
+          <label class="form-label">Username</label>
+          <input class="form-control" name="username" autocomplete="username" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Password</label>
+          <input class="form-control" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <div class="form-footer">
+          <button class="btn btn-primary w-100" type="submit">Login</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+</body>
+</html>
+{{end}}
