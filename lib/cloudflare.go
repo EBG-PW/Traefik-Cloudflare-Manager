@@ -82,21 +82,61 @@ func (c *CloudflareClient) EnsureARecord(ctx context.Context, zoneID, name, ip s
 	return out.Result.ID, nil
 }
 
-func (c *CloudflareClient) DeleteARecord(ctx context.Context, zoneID, recordID, name string) error {
+func (c *CloudflareClient) EnsureCNAMERecord(ctx context.Context, zoneID, name, target string, proxied bool) (string, error) {
+	var list cfResponse[[]cfDNSRecord]
+	path := fmt.Sprintf("/zones/%s/dns_records?name=%s", url.PathEscape(zoneID), url.QueryEscape(name))
+	if err := c.do(ctx, http.MethodGet, path, nil, &list); err != nil {
+		return "", err
+	}
+
+	cnameID := ""
+	for _, record := range list.Result {
+		if strings.EqualFold(record.Type, "CNAME") && cnameID == "" {
+			cnameID = record.ID
+			continue
+		}
+		if err := c.deleteDNSRecordByID(ctx, zoneID, record.ID); err != nil {
+			return "", err
+		}
+	}
+
+	payload := map[string]any{"type": "CNAME", "name": name, "content": target, "ttl": 1, "proxied": proxied}
+	var out cfResponse[cfDNSRecord]
+	if cnameID != "" {
+		err := c.do(ctx, http.MethodPut, fmt.Sprintf("/zones/%s/dns_records/%s", url.PathEscape(zoneID), url.PathEscape(cnameID)), payload, &out)
+		return cnameID, err
+	}
+	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/zones/%s/dns_records", url.PathEscape(zoneID)), payload, &out); err != nil {
+		return "", err
+	}
+	return out.Result.ID, nil
+}
+
+func (c *CloudflareClient) DeleteDNSRecord(ctx context.Context, zoneID, recordID, name string) error {
 	if recordID == "" && name != "" {
 		var list cfResponse[[]cfDNSRecord]
-		path := fmt.Sprintf("/zones/%s/dns_records?type=A&name=%s", url.PathEscape(zoneID), url.QueryEscape(name))
+		path := fmt.Sprintf("/zones/%s/dns_records?name=%s", url.PathEscape(zoneID), url.QueryEscape(name))
 		if err := c.do(ctx, http.MethodGet, path, nil, &list); err != nil {
 			return err
 		}
-		if len(list.Result) == 0 {
-			return nil
+		for _, record := range list.Result {
+			if err := c.deleteDNSRecordByID(ctx, zoneID, record.ID); err != nil {
+				return err
+			}
 		}
-		recordID = list.Result[0].ID
+		return nil
 	}
 	if recordID == "" {
 		return nil
 	}
+	return c.deleteDNSRecordByID(ctx, zoneID, recordID)
+}
+
+func (c *CloudflareClient) DeleteARecord(ctx context.Context, zoneID, recordID, name string) error {
+	return c.DeleteDNSRecord(ctx, zoneID, recordID, name)
+}
+
+func (c *CloudflareClient) deleteDNSRecordByID(ctx context.Context, zoneID, recordID string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", url.PathEscape(zoneID), url.PathEscape(recordID)), nil)
 	if err != nil {
 		return err

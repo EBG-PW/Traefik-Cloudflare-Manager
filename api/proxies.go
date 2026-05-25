@@ -16,15 +16,16 @@ import (
 )
 
 type proxyInput struct {
-	Host            string           `json:"host"`
-	Protocol        string           `json:"protocol"`
-	IP              string           `json:"ip"`
-	Port            int              `json:"port"`
-	LoadBalancer    bool             `json:"load_balancer"`
-	Strategy        string           `json:"strategy"`
-	Sticky          bool             `json:"sticky"`
-	Backends        []models.Backend `json:"backends"`
-	CloudflareProxy bool             `json:"cloudflare_proxy"`
+	Host            string            `json:"host"`
+	Protocol        string            `json:"protocol"`
+	IP              string            `json:"ip"`
+	Port            int               `json:"port"`
+	LoadBalancer    bool              `json:"load_balancer"`
+	Strategy        string            `json:"strategy"`
+	Sticky          bool              `json:"sticky"`
+	Backends        []models.Backend  `json:"backends"`
+	Locations       []models.Location `json:"locations"`
+	CloudflareProxy bool              `json:"cloudflare_proxy"`
 }
 
 func (a *App) handleProxyCreate(w http.ResponseWriter, r *http.Request) {
@@ -184,12 +185,19 @@ func (a *App) upsertProxy(ctx context.Context, oldHost string, input proxyInput,
 	if err != nil {
 		return models.ProxyConfig{}, err
 	}
+	locations, err := normalizeLocations(input.Locations)
+	if err != nil {
+		return models.ProxyConfig{}, err
+	}
 	primary := backends[0]
 	strategy, sticky := normalizeLoadBalancerOptions(input)
 	if !lib.ValidHost(host) || !strings.HasSuffix(host, "."+cfg.Domain) {
 		return models.ProxyConfig{}, errString("Proxy domain must be a host inside " + cfg.Domain + ".")
 	}
-	if input.CloudflareProxy && (lib.IsPrivateIP(cfg.ServerIP) || backendsContainPrivateIP(backends)) {
+	if host == cfg.TraefikHost || host == cfg.ManagerHost {
+		return models.ProxyConfig{}, errString("Proxy domain cannot be the Traefik or manager host.")
+	}
+	if input.CloudflareProxy && (lib.IsPrivateIP(cfg.ServerIP) || backendsContainPrivateIP(backends) || locationsContainPrivateIP(locations)) {
 		return models.ProxyConfig{}, errString("Cloudflare proxy cannot be enabled for local/private IPs.")
 	}
 	oldIndex := -1
@@ -210,7 +218,7 @@ func (a *App) upsertProxy(ctx context.Context, oldHost string, input proxyInput,
 	if conflict {
 		return models.ProxyConfig{}, errString("Another proxy already uses " + host + ".")
 	}
-	recordID, err := lib.NewCloudflareClient(cfg.CloudflareToken).EnsureARecord(ctx, cfg.ZoneID, host, cfg.ServerIP, input.CloudflareProxy)
+	recordID, err := lib.NewCloudflareClient(cfg.CloudflareToken).EnsureCNAMERecord(ctx, cfg.ZoneID, host, cfg.TraefikHost, input.CloudflareProxy)
 	if err != nil {
 		return models.ProxyConfig{}, errString("Cloudflare DNS update failed: " + err.Error())
 	}
@@ -224,6 +232,7 @@ func (a *App) upsertProxy(ctx context.Context, oldHost string, input proxyInput,
 		Strategy:         strategy,
 		Sticky:           sticky,
 		Backends:         backends,
+		Locations:        locations,
 		CloudflareProxy:  input.CloudflareProxy,
 		CloudflareRecord: recordID,
 		Status:           "creating",
@@ -259,7 +268,7 @@ func (a *App) upsertProxy(ctx context.Context, oldHost string, input proxyInput,
 		cfg.Proxies = append(cfg.Proxies, proxy)
 	}
 	if oldHost != "" && oldHost != host {
-		if err := lib.NewCloudflareClient(cfg.CloudflareToken).DeleteARecord(ctx, cfg.ZoneID, oldProxy.CloudflareRecord, oldProxy.Host); err != nil {
+		if err := lib.NewCloudflareClient(cfg.CloudflareToken).DeleteDNSRecord(ctx, cfg.ZoneID, oldProxy.CloudflareRecord, oldProxy.Host); err != nil {
 			return models.ProxyConfig{}, errString("Old Cloudflare DNS delete failed: " + err.Error())
 		}
 	}
@@ -304,6 +313,58 @@ func normalizeBackends(input proxyInput) ([]models.Backend, error) {
 	return backends, nil
 }
 
+func normalizeLocations(raw []models.Location) ([]models.Location, error) {
+	locations := make([]models.Location, 0, len(raw))
+	seen := map[string]bool{}
+	for i, location := range raw {
+		location.Path = cleanLocationPath(location.Path)
+		location.Protocol = strings.ToLower(strings.TrimSpace(location.Protocol))
+		location.IP = strings.TrimSpace(location.IP)
+		if location.Path == "" {
+			continue
+		}
+		if location.Path == "/" {
+			return nil, errString("Location " + strconv.Itoa(i+1) + " path cannot be '/'. Use the main proxy backend for the root path.")
+		}
+		if strings.ContainsAny(location.Path, "` \t\r\n") {
+			return nil, errString("Location " + strconv.Itoa(i+1) + " path contains invalid characters.")
+		}
+		if seen[location.Path] {
+			return nil, errString("Location path " + location.Path + " is already configured.")
+		}
+		seen[location.Path] = true
+		if location.Protocol == "" {
+			location.Protocol = "http"
+		}
+		if location.Protocol != "http" && location.Protocol != "https" {
+			return nil, errString("Location " + strconv.Itoa(i+1) + " protocol must be http or https.")
+		}
+		if !lib.ValidIP(location.IP) {
+			return nil, errString("Location " + strconv.Itoa(i+1) + " IP must be an IPv4 or IPv6 address.")
+		}
+		if location.Port < 1 || location.Port > 65535 {
+			return nil, errString("Location " + strconv.Itoa(i+1) + " port must be between 1 and 65535.")
+		}
+		locations = append(locations, location)
+	}
+	sort.Slice(locations, func(i, j int) bool { return locations[i].Path < locations[j].Path })
+	return locations, nil
+}
+
+func cleanLocationPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	for len(path) > 1 && strings.HasSuffix(path, "/") {
+		path = strings.TrimSuffix(path, "/")
+	}
+	return path
+}
+
 func normalizeLoadBalancerOptions(input proxyInput) (string, bool) {
 	strategy := normalizeStrategy(input.Strategy)
 	sticky := input.Sticky
@@ -334,6 +395,15 @@ func backendsContainPrivateIP(backends []models.Backend) bool {
 	return false
 }
 
+func locationsContainPrivateIP(locations []models.Location) bool {
+	for _, location := range locations {
+		if lib.IsPrivateIP(location.IP) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) deleteProxy(ctx context.Context, host string) (string, error) {
 	cfg := a.currentConfig()
 	next := cfg.Proxies[:0]
@@ -350,7 +420,7 @@ func (a *App) deleteProxy(ctx context.Context, host string) (string, error) {
 	if !found {
 		return "", errString("Proxy not found.")
 	}
-	if err := lib.NewCloudflareClient(cfg.CloudflareToken).DeleteARecord(ctx, cfg.ZoneID, removed.CloudflareRecord, removed.Host); err != nil {
+	if err := lib.NewCloudflareClient(cfg.CloudflareToken).DeleteDNSRecord(ctx, cfg.ZoneID, removed.CloudflareRecord, removed.Host); err != nil {
 		return "", errString("Cloudflare DNS delete failed: " + err.Error())
 	}
 	cfg.Proxies = next
@@ -423,7 +493,7 @@ func (a *App) reconcileProxiesOnce(ctx context.Context) {
 
 	for i := range cfg.Proxies {
 		proxy := &cfg.Proxies[i]
-		recordID, err := cf.EnsureARecord(ctx, cfg.ZoneID, proxy.Host, cfg.ServerIP, proxy.CloudflareProxy)
+		recordID, err := cf.EnsureCNAMERecord(ctx, cfg.ZoneID, proxy.Host, cfg.TraefikHost, proxy.CloudflareProxy)
 		if err != nil {
 			proxy.Status = "error"
 			proxy.StatusMessage = "Cloudflare DNS check failed: " + err.Error()

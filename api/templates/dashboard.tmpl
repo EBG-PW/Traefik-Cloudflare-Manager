@@ -168,6 +168,18 @@
                     <button class="btn btn-outline-primary btn-sm mt-2" id="add-backend" type="button">Add backend</button>
                   </div>
 
+                  <div class="hr-text">Locations</div>
+                  <div id="location-list">
+                    <div class="location-label-row row g-2 text-secondary small">
+                      <div class="col-3">Path</div>
+                      <div class="col-2">Protocol</div>
+                      <div class="col-4">Backend IP</div>
+                      <div class="col-2">Port</div>
+                      <div class="col-1"></div>
+                    </div>
+                  </div>
+                  <button class="btn btn-outline-primary btn-sm mt-2" id="add-location" type="button">Add location</button>
+
                   <label class="form-check mt-3">
                     <input class="form-check-input" type="checkbox" name="cloudflare_proxy" id="cf_proxy" {{if .LocalWarning}}disabled{{end}}>
                     <span class="form-check-label">Cloudflare proxy</span>
@@ -200,13 +212,17 @@
                   </tr>
                   </thead>
                   <tbody id="proxy-table">
+                  {{$root := .}}
                   {{range .Config.Proxies}}
                     <tr class="proxy-row {{.Status}} {{if .Paused}}paused{{end}}" data-host="{{.Host}}">
                       <td><strong>{{.Host}}</strong></td>
                       <td>{{template "proxy_target" .}}</td>
                       <td>{{if .CreatedBy}}{{.CreatedBy}}{{else}}-{{end}}</td>
                       <td>{{template "proxy_state" .}}</td>
-                      <td>{{if .CloudflareProxy}}<span class="badge bg-green-lt">proxied</span>{{else}}<span class="badge bg-secondary-lt">DNS only</span>{{end}}</td>
+                      <td>
+                        {{if .CloudflareProxy}}<span class="badge bg-green-lt">proxied</span>{{else}}<span class="badge bg-secondary-lt">DNS only</span>{{end}}
+                        <div class="text-secondary small">CNAME -> {{$root.Config.TraefikHost}}</div>
+                      </td>
                       <td>{{template "proxy_actions" .}}</td>
                     </tr>
                   {{else}}
@@ -226,6 +242,7 @@
 {{template "modal_layer" .}}
 <script>
 const serverIPIsLocal = {{if .LocalWarning}}true{{else}}false{{end}};
+const traefikHost = '{{.Config.TraefikHost}}';
 const ip = document.getElementById('backend_ip');
 const cb = document.getElementById('cf_proxy');
 const note = document.getElementById('cf_note');
@@ -241,6 +258,8 @@ const lbFields = document.getElementById('load-balancer-fields');
 const backendList = document.getElementById('backend-list');
 const addBackendButton = document.getElementById('add-backend');
 const stickySessions = document.getElementById('sticky_sessions');
+const locationList = document.getElementById('location-list');
+const addLocationButton = document.getElementById('add-location');
 let editingHost = '';
 let proxyCache = new Map();
 
@@ -249,8 +268,9 @@ function privateIP(v) {
 }
 
 function backendIPs() {
-  if (!lbToggle.checked) return [ip.value];
-  return [...backendList.querySelectorAll('.backend-ip')].map(input => input.value);
+  const primaryIPs = lbToggle.checked ? [...backendList.querySelectorAll('.backend-ip')].map(input => input.value) : [ip.value];
+  const locationIPs = [...locationList.querySelectorAll('.location-ip')].map(input => input.value);
+  return [...primaryIPs, ...locationIPs];
 }
 
 function syncCloudflareProxy() {
@@ -294,6 +314,27 @@ function resetBackendRows(backends = []) {
   rows.forEach(addBackendRow);
 }
 
+function addLocationRow(location = {}) {
+  const row = document.createElement('div');
+  row.className = 'location-row row g-2';
+  row.innerHTML = `<div class="col-3"><label class="form-label visually-hidden">Path</label><input class="form-control location-path" placeholder="/media"></div>
+    <div class="col-2"><label class="form-label visually-hidden">Protocol</label><select class="form-select location-protocol"><option value="http">http</option><option value="https">https</option></select></div>
+    <div class="col-4"><label class="form-label visually-hidden">Backend IP</label><input class="form-control location-ip" placeholder="10.0.0.20"></div>
+    <div class="col-2"><label class="form-label visually-hidden">Port</label><input class="form-control location-port" type="number" min="1" max="65535" placeholder="8080"></div>
+    <div class="col-1"><button class="btn btn-icon btn-outline-danger remove-location" type="button" title="Remove location">x</button></div>`;
+  locationList.appendChild(row);
+  row.querySelector('.location-path').value = location.path || '';
+  row.querySelector('.location-protocol').value = location.protocol || 'http';
+  row.querySelector('.location-ip').value = location.ip || '';
+  row.querySelector('.location-port').value = location.port || '';
+  syncCloudflareProxy();
+}
+
+function resetLocationRows(locations = []) {
+  locationList.querySelectorAll('.location-row').forEach(row => row.remove());
+  locations.forEach(addLocationRow);
+}
+
 function collectBackends(formData) {
   if (!lbToggle.checked) {
     return [{
@@ -308,6 +349,15 @@ function collectBackends(formData) {
     port: Number(row.querySelector('.backend-port').value),
     weight: Number(row.querySelector('.backend-weight').value || 0)
   }));
+}
+
+function collectLocations() {
+  return [...locationList.querySelectorAll('.location-row')].map(row => ({
+    path: row.querySelector('.location-path').value,
+    protocol: row.querySelector('.location-protocol').value,
+    ip: row.querySelector('.location-ip').value,
+    port: Number(row.querySelector('.location-port').value)
+  })).filter(location => location.path || location.ip || location.port);
 }
 
 function strategyLabel(strategy) {
@@ -338,6 +388,13 @@ function backendHover(backends) {
     const target = `${backend.protocol}://${backend.ip}:${backend.port}`;
     const weight = backend.weight ? `weight ${backend.weight}` : 'weight default';
     return `<div class="backend-hover-row"><span>${index + 1}. ${escapeHTML(target)}</span><span class="text-secondary">${escapeHTML(weight)}</span></div>`;
+  }).join('')}</div>`;
+}
+
+function locationHover(locations) {
+  return `<div class="backend-hover">${locations.map((location, index) => {
+    const target = `${location.protocol}://${location.ip}:${location.port}`;
+    return `<div class="backend-hover-row"><span>${index + 1}. ${escapeHTML(location.path)}</span><span class="text-secondary">${escapeHTML(target)}</span></div>`;
   }).join('')}</div>`;
 }
 
@@ -384,9 +441,13 @@ function formatRemaining(value) {
 
 function targetSummary(proxy) {
   const backends = proxy.backends && proxy.backends.length ? proxy.backends : [{ protocol: proxy.protocol, ip: proxy.ip, port: proxy.port }];
-  if (backends.length === 1) return `${backends[0].protocol}://${backends[0].ip}:${backends[0].port}`;
+  const locations = proxy.locations || [];
+  const locationSummary = locations.length
+    ? `<div><span class="backend-summary" tabindex="0"><strong>${locations.length} locations</strong>${locationHover(locations)}</span></div>`
+    : '';
+  if (backends.length === 1) return `${backends[0].protocol}://${backends[0].ip}:${backends[0].port}${locationSummary}`;
   const sticky = proxy.sticky || proxy.strategy === 'sticky' ? ' + sticky sessions' : '';
-  return `<span class="backend-summary" tabindex="0"><strong>${backends.length} backends</strong>${backendHover(backends)}</span><div class="text-secondary small">${strategyLabel(proxy.strategy)}${sticky}</div>`;
+  return `<span class="backend-summary" tabindex="0"><strong>${backends.length} backends</strong>${backendHover(backends)}</span><div class="text-secondary small">${strategyLabel(proxy.strategy)}${sticky}</div>${locationSummary}`;
 }
 
 function actionButtons(proxy) {
@@ -398,6 +459,11 @@ function actionButtons(proxy) {
     <button class="btn btn-outline-secondary btn-sm" data-action="${pauseAction}" data-host="${host}">${pauseLabel}</button>
     <button class="btn btn-outline-danger btn-sm" data-action="delete" data-host="${host}">Delete</button>
   </div>`;
+}
+
+function cloudflareCell(proxy) {
+  const mode = proxy.cloudflare_proxy ? '<span class="badge bg-green-lt">proxied</span>' : '<span class="badge bg-secondary-lt">DNS only</span>';
+  return `${mode}<div class="text-secondary small">CNAME -> ${escapeHTML(traefikHost)}</div>`;
 }
 
 function upsertProxy(proxy) {
@@ -415,7 +481,7 @@ function upsertProxy(proxy) {
     <td>${targetSummary(proxy)}</td>
     <td>${proxy.created_by || '-'}</td>
     <td>${stateBadge(proxy)}</td>
-    <td>${proxy.cloudflare_proxy ? '<span class="badge bg-green-lt">proxied</span>' : '<span class="badge bg-secondary-lt">DNS only</span>'}</td>
+    <td>${cloudflareCell(proxy)}</td>
     <td>${actionButtons(proxy)}</td>`;
 }
 
@@ -470,6 +536,7 @@ async function startEditProxy(host) {
   proxyCancelEdit.classList.remove('d-none');
   proxyForm.elements.host.value = proxy.host || '';
   const backends = proxy.backends && proxy.backends.length ? proxy.backends : [{ protocol: proxy.protocol, ip: proxy.ip, port: proxy.port }];
+  resetLocationRows(proxy.locations || []);
   lbToggle.checked = proxy.load_balancer || backends.length > 1;
   proxyForm.elements.strategy.value = proxy.strategy || 'wrr';
   stickySessions.checked = !!proxy.sticky || proxy.strategy === 'sticky';
@@ -492,6 +559,7 @@ function resetProxyForm() {
   proxyCancelEdit.classList.add('d-none');
   proxyForm.reset();
   resetBackendRows([{ protocol: 'http' }]);
+  resetLocationRows();
   syncLoadBalancerMode();
 }
 
@@ -641,6 +709,7 @@ function resizeCanvasToDisplaySize(canvas) {
 ip.addEventListener('input', syncCloudflareProxy);
 lbToggle.addEventListener('change', syncLoadBalancerMode);
 backendList.addEventListener('input', syncCloudflareProxy);
+locationList.addEventListener('input', syncCloudflareProxy);
 backendList.addEventListener('click', (event) => {
   const button = event.target.closest('.remove-backend');
   if (!button) return;
@@ -648,7 +717,14 @@ backendList.addEventListener('click', (event) => {
     button.closest('.backend-row').remove();
   }
 });
+locationList.addEventListener('click', (event) => {
+  const button = event.target.closest('.remove-location');
+  if (!button) return;
+  button.closest('.location-row').remove();
+  syncCloudflareProxy();
+});
 addBackendButton.addEventListener('click', () => addBackendRow());
+addLocationButton.addEventListener('click', () => addLocationRow());
 proxyCancelEdit.addEventListener('click', resetProxyForm);
 document.getElementById('traefik-stop-form').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -684,6 +760,7 @@ proxyForm.addEventListener('submit', async (event) => {
     strategy: formData.get('strategy') || 'wrr',
     sticky: formData.get('sticky') === 'on',
     backends: collectBackends(formData),
+    locations: collectLocations(),
     cloudflare_proxy: formData.get('cloudflare_proxy') === 'on'
   };
   const oldHost = editingHost;
@@ -744,6 +821,21 @@ connectStats();
 <div class="text-secondary small">{{strategyLabel .Strategy}}{{if or .Sticky (eq .Strategy "sticky")}} + sticky sessions{{end}}</div>
 {{else}}
 {{.Protocol}}://{{.IP}}:{{.Port}}
+{{end}}
+{{if .Locations}}
+<div>
+  <span class="backend-summary" tabindex="0">
+    <strong>{{len .Locations}} locations</strong>
+    <div class="backend-hover">
+      {{range $index, $location := .Locations}}
+      <div class="backend-hover-row">
+        <span>{{add $index 1}}. {{$location.Path}}</span>
+        <span class="text-secondary">{{$location.Protocol}}://{{$location.IP}}:{{$location.Port}}</span>
+      </div>
+      {{end}}
+    </div>
+  </span>
+</div>
 {{end}}
 {{end}}
 

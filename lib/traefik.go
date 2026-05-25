@@ -38,6 +38,9 @@ func WriteTraefikConfig(store *models.Store, cfg *models.Config) error {
 			continue
 		}
 		writeRouter(&b, RouterName(p.Host), p.Host, RouterName(p.Host)+"-service", "")
+		for i, location := range p.Locations {
+			writePathRouter(&b, LocationRouterName(p.Host, i), p.Host, location.Path, LocationRouterName(p.Host, i)+"-service")
+		}
 	}
 	b.WriteString("  middlewares:\n")
 	b.WriteString("    dashboard-auth:\n")
@@ -71,6 +74,13 @@ func WriteTraefikConfig(store *models.Store, cfg *models.Config) error {
 			if backend.Weight > 0 {
 				b.WriteString(fmt.Sprintf("            weight: %d\n", backend.Weight))
 			}
+		}
+		for i, location := range p.Locations {
+			b.WriteString("    " + LocationRouterName(p.Host, i) + "-service:\n")
+			b.WriteString("      loadBalancer:\n")
+			b.WriteString("        servers:\n")
+			target := fmt.Sprintf("%s://%s:%d", location.Protocol, location.IP, location.Port)
+			b.WriteString("          - url: " + yamlQuote(target) + "\n")
 		}
 	}
 
@@ -131,6 +141,17 @@ func writeRouter(b *strings.Builder, name, host, service, middleware string) {
 	}
 }
 
+func writePathRouter(b *strings.Builder, name, host, path, service string) {
+	b.WriteString("    " + name + ":\n")
+	b.WriteString("      rule: " + yamlQuote("Host(`"+host+"`) && PathPrefix(`"+path+"`)") + "\n")
+	b.WriteString("      entryPoints:\n")
+	b.WriteString("        - websecure\n")
+	b.WriteString("      service: " + service + "\n")
+	b.WriteString("      priority: " + fmt.Sprintf("%d", 1000+len(path)) + "\n")
+	b.WriteString("      tls:\n")
+	b.WriteString("        certResolver: cloudflare\n")
+}
+
 func yamlQuote(s string) string {
 	raw, _ := json.Marshal(s)
 	return string(raw)
@@ -143,4 +164,8 @@ func RouterName(host string) string {
 		return "proxy"
 	}
 	return strings.ToLower(name)
+}
+
+func LocationRouterName(host string, index int) string {
+	return fmt.Sprintf("%s-location-%d", RouterName(host), index+1)
 }

@@ -28,27 +28,28 @@ type Config struct {
 }
 
 type ProxyConfig struct {
-	Host             string    `json:"host"`
-	Protocol         string    `json:"protocol"`
-	IP               string    `json:"ip"`
-	Port             int       `json:"port"`
-	LoadBalancer     bool      `json:"load_balancer"`
-	Strategy         string    `json:"strategy"`
-	Sticky           bool      `json:"sticky"`
-	Backends         []Backend `json:"backends,omitempty"`
-	CloudflareProxy  bool      `json:"cloudflare_proxy"`
-	CloudflareRecord string    `json:"cloudflare_record,omitempty"`
-	Paused           bool      `json:"paused"`
-	Status           string    `json:"status"`
-	StatusMessage    string    `json:"status_message,omitempty"`
-	SSLReady         bool      `json:"ssl_ready"`
-	CertNotBefore    time.Time `json:"cert_not_before,omitempty"`
-	CertNotAfter     time.Time `json:"cert_not_after,omitempty"`
-	CertIssuer       string    `json:"cert_issuer,omitempty"`
-	CreatedBy        string    `json:"created_by,omitempty"`
-	LastChecked      time.Time `json:"last_checked,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	Host             string     `json:"host"`
+	Protocol         string     `json:"protocol"`
+	IP               string     `json:"ip"`
+	Port             int        `json:"port"`
+	LoadBalancer     bool       `json:"load_balancer"`
+	Strategy         string     `json:"strategy"`
+	Sticky           bool       `json:"sticky"`
+	Backends         []Backend  `json:"backends,omitempty"`
+	Locations        []Location `json:"locations,omitempty"`
+	CloudflareProxy  bool       `json:"cloudflare_proxy"`
+	CloudflareRecord string     `json:"cloudflare_record,omitempty"`
+	Paused           bool       `json:"paused"`
+	Status           string     `json:"status"`
+	StatusMessage    string     `json:"status_message,omitempty"`
+	SSLReady         bool       `json:"ssl_ready"`
+	CertNotBefore    time.Time  `json:"cert_not_before,omitempty"`
+	CertNotAfter     time.Time  `json:"cert_not_after,omitempty"`
+	CertIssuer       string     `json:"cert_issuer,omitempty"`
+	CreatedBy        string     `json:"created_by,omitempty"`
+	LastChecked      time.Time  `json:"last_checked,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type User struct {
@@ -62,6 +63,13 @@ type Backend struct {
 	IP       string `json:"ip"`
 	Port     int    `json:"port"`
 	Weight   int    `json:"weight,omitempty"`
+}
+
+type Location struct {
+	Path     string `json:"path"`
+	Protocol string `json:"protocol"`
+	IP       string `json:"ip"`
+	Port     int    `json:"port"`
 }
 
 type DockerStats struct {
