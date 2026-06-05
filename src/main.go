@@ -12,12 +12,15 @@ import (
 )
 
 func main() {
+	addr := lib.Env("TCM_LISTEN_ADDR", lib.DefaultListenAddr)
 	store := &models.Store{
-		DataDir:       lib.Env("TCM_DATA_DIR", lib.DefaultDataDir),
-		DockerVolume:  lib.Env("TCM_DOCKER_VOLUME", lib.DefaultDockerVol),
-		DockerNetwork: lib.Env("TCM_DOCKER_NETWORK", lib.DefaultDockerNet),
-		DockerSocket:  lib.Env("TCM_DOCKER_SOCKET", lib.DefaultDockerSock),
-		TraefikImage:  lib.Env("TCM_TRAEFIK_IMAGE", lib.DefaultTraefik),
+		DataDir:                lib.Env("TCM_DATA_DIR", lib.DefaultDataDir),
+		DockerVolume:           lib.Env("TCM_DOCKER_VOLUME", lib.DefaultDockerVol),
+		DockerNetwork:          lib.Env("TCM_DOCKER_NETWORK", lib.DefaultDockerNet),
+		DockerSocket:           lib.Env("TCM_DOCKER_SOCKET", lib.DefaultDockerSock),
+		TraefikImage:           lib.Env("TCM_TRAEFIK_IMAGE", lib.DefaultTraefik),
+		TraefikNoNewPrivileges: lib.EnvBool("TCM_TRAEFIK_NO_NEW_PRIVILEGES", false),
+		ManagerServiceURL:      lib.Env("TCM_MANAGER_SERVICE_URL", lib.ManagerServiceURL("traefik-cloudflare-manager", addr)),
 	}
 	if err := os.MkdirAll(store.DataDir, 0o700); err != nil {
 		log.Fatalf("create data dir: %v", err)
@@ -28,7 +31,6 @@ func main() {
 	}
 	app := api.NewApp(store, cfg)
 	handler := middleware.SecurityHeaders(middleware.LimitBody(app.Routes()))
-	addr := lib.Env("TCM_LISTEN_ADDR", lib.DefaultListenAddr)
 	log.Printf("%s listening on %s", lib.AppName, addr)
 	log.Fatal(http.ListenAndServe(addr, handler))
 }

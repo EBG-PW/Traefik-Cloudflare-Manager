@@ -189,6 +189,18 @@ func (d *DockerClient) CreateTraefik(ctx context.Context, cfg *models.Config, st
 			binds = append(binds, abs+":/app/data")
 		}
 	}
+	hostConfig := map[string]any{
+		"Binds":  binds,
+		"Mounts": mounts,
+		"PortBindings": map[string]any{
+			"80/tcp":  []map[string]string{{"HostPort": "80"}},
+			"443/tcp": []map[string]string{{"HostPort": "443"}},
+		},
+		"RestartPolicy": map[string]string{"Name": "unless-stopped"},
+	}
+	if store.TraefikNoNewPrivileges {
+		hostConfig["SecurityOpt"] = []string{"no-new-privileges:true"}
+	}
 	payload := map[string]any{
 		"Image": store.TraefikImage,
 		"Env":   []string{"CF_DNS_API_TOKEN=" + cfg.CloudflareToken},
@@ -197,16 +209,7 @@ func (d *DockerClient) CreateTraefik(ctx context.Context, cfg *models.Config, st
 			"80/tcp":  map[string]any{},
 			"443/tcp": map[string]any{},
 		},
-		"HostConfig": map[string]any{
-			"Binds":  binds,
-			"Mounts": mounts,
-			"PortBindings": map[string]any{
-				"80/tcp":  []map[string]string{{"HostPort": "80"}},
-				"443/tcp": []map[string]string{{"HostPort": "443"}},
-			},
-			"RestartPolicy": map[string]string{"Name": "unless-stopped"},
-			"SecurityOpt":   []string{"no-new-privileges:true"},
-		},
+		"HostConfig": hostConfig,
 		"NetworkingConfig": map[string]any{
 			"EndpointsConfig": map[string]any{store.DockerNetwork: map[string]any{}},
 		},

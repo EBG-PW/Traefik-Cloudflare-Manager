@@ -16,7 +16,54 @@ func Env(key, fallback string) string {
 	return fallback
 }
 
+func EnvBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(strings.ToLower(Getenv(key)))
+	if value == "" {
+		return fallback
+	}
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func ManagerServiceURL(host, listenAddr string) string {
+	return "http://" + host + ":" + listenPort(listenAddr, DefaultListenAddr)
+}
+
 var Getenv = os.Getenv
+
+func listenPort(addr, fallback string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		addr = fallback
+	}
+	if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+		return port
+	}
+	if strings.HasPrefix(addr, ":") && isPort(addr[1:]) {
+		return addr[1:]
+	}
+	if isPort(addr) {
+		return addr
+	}
+	if idx := strings.LastIndex(addr, ":"); idx >= 0 && isPort(addr[idx+1:]) {
+		return addr[idx+1:]
+	}
+	if fallback != addr {
+		return listenPort(fallback, "")
+	}
+	return "8080"
+}
+
+func isPort(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 func CleanHost(v string) string {
 	v = strings.TrimSpace(strings.ToLower(v))

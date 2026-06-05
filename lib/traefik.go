@@ -53,7 +53,7 @@ func WriteTraefikConfig(store *models.Store, cfg *models.Config) error {
 	b.WriteString("    manager-service:\n")
 	b.WriteString("      loadBalancer:\n")
 	b.WriteString("        servers:\n")
-	b.WriteString("          - url: " + yamlQuote(Env("TCM_MANAGER_SERVICE_URL", "http://traefik-cloudflare-manager:8080")) + "\n")
+	b.WriteString("          - url: " + yamlQuote(managerServiceURL(store)) + "\n")
 	for _, p := range cfg.Proxies {
 		if p.Paused {
 			continue
@@ -86,6 +86,13 @@ func WriteTraefikConfig(store *models.Store, cfg *models.Config) error {
 
 	path := filepath.Join(configDir, TraefikConfigFile)
 	return os.WriteFile(path, []byte(b.String()), 0o600)
+}
+
+func managerServiceURL(store *models.Store) string {
+	if store != nil && strings.TrimSpace(store.ManagerServiceURL) != "" {
+		return strings.TrimSpace(store.ManagerServiceURL)
+	}
+	return ManagerServiceURL("traefik-cloudflare-manager", DefaultListenAddr)
 }
 
 func LoadBalancerStrategy(p models.ProxyConfig) string {

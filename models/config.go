@@ -3,11 +3,13 @@ package models
 import "time"
 
 type Store struct {
-	DataDir       string
-	DockerVolume  string
-	DockerNetwork string
-	DockerSocket  string
-	TraefikImage  string
+	DataDir                string
+	DockerVolume           string
+	DockerNetwork          string
+	DockerSocket           string
+	TraefikImage           string
+	TraefikNoNewPrivileges bool
+	ManagerServiceURL      string
 }
 
 type Config struct {

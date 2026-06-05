@@ -10,7 +10,7 @@ The management UI uses the Tabler dashboard theme pinned to `@tabler/core@1.4.0`
 docker compose up -d --build
 ```
 
-Open `http://SERVER-IP:8080`. The first-run form asks for:
+Open `http://SERVER-IP:8080`, or `http://SERVER-IP:PORT` when `TCM_HTTP_PORT` is set. The first-run form asks for:
 
 - Cloudflare API token
 - ACME email
@@ -56,8 +56,11 @@ Example proxy body:
 Optional environment variables:
 
 - `TCM_HTTP_PORT`: host port for the setup/management UI, default `8080`
+- `TCM_CONTAINER_PORT`: internal port the manager listens on inside Docker, default `8080`
 - `TCM_DOCKER_VOLUME`: optional override for the Docker volume shared by the manager and Traefik; normally auto-detected
 - `TCM_DOCKER_NETWORK`: Docker network used by the manager and Traefik, default `traefik-cloudflare-manager`
+- `TCM_MANAGER_SERVICE_URL`: optional override for the URL Traefik uses to reach this manager, default `http://traefik-cloudflare-manager:TCM_CONTAINER_PORT`
+- `TCM_TRAEFIK_NO_NEW_PRIVILEGES`: set to `true` to add `no-new-privileges:true` to the Traefik container; default `false`
 - `TCM_DEFAULT_DOMAIN`: optional setup-form prefill
 - `TCM_PUBLIC_IP`: optional setup-form prefill
 
