@@ -135,8 +135,8 @@ func validateSetup(cfg *models.Config, password string) error {
 		return errors.New("Server IP must be an IPv4 or IPv6 address")
 	case cfg.Username == "" || strings.Contains(cfg.Username, ":"):
 		return errors.New("Traefik username is required and cannot contain ':'")
-	case len(password) < 8:
-		return errors.New("Password must be at least 8 characters")
+	case len(password) < 12:
+		return errors.New("Password must be at least 12 characters")
 	case !lib.ValidHost(cfg.TraefikHost) || !strings.HasSuffix(cfg.TraefikHost, "."+cfg.Domain):
 		return errors.New("Traefik host must be inside the configured domain")
 	case !lib.ValidHost(cfg.ManagerHost) || !strings.HasSuffix(cfg.ManagerHost, "."+cfg.Domain):
@@ -169,7 +169,7 @@ func (a *App) completeSetup(ctx context.Context, cfg *models.Config, password st
 		return errors.New("Cloudflare zone lookup failed: " + err.Error())
 	}
 	progress("Hashing shared Traefik and manager password.")
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {
 		return errors.New("could not hash password")
 	}
@@ -197,15 +197,16 @@ func (a *App) completeSetup(ctx context.Context, cfg *models.Config, password st
 		return errors.New("could not write Traefik config: " + err.Error())
 	}
 	progress("Saving manager configuration.")
-	if err := lib.SaveConfig(a.store, cfg); err != nil {
+	if err := a.jsonStore.SaveInitialConfig(cfg); err != nil {
 		return errors.New("could not save manager config: " + err.Error())
 	}
 	a.setConfig(cfg)
 	progress("Starting Traefik container.")
 	if err := a.deployTraefik(ctx, cfg); err != nil {
-		cfg.LastDeployError = err.Error()
-		_ = lib.SaveConfig(a.store, cfg)
-		a.setConfig(cfg)
+		_, _ = a.jsonStore.UpdateConfig(func(current *models.Config) error {
+			current.LastDeployError = err.Error()
+			return nil
+		})
 		return errors.New("could not deploy Traefik: " + err.Error())
 	}
 	progress("Waiting for a valid HTTPS certificate on " + cfg.ManagerHost + ".")

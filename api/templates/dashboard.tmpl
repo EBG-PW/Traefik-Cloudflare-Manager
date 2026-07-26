@@ -17,6 +17,9 @@
             <h1 class="page-title">Proxies</h1>
             <div class="text-secondary">{{.Config.Domain}} - {{.Config.Mode}} mode</div>
           </div>
+          <div class="col-auto ms-auto">
+            <button class="btn btn-primary" type="button" id="open-proxy-editor">Add proxy</button>
+          </div>
         </div>
       </div>
     </div>
@@ -25,6 +28,7 @@
       <div class="container-fluid page-shell">
         {{if .Message}}<div class="alert alert-success">{{.Message}}</div>{{end}}
         {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
+        {{if .InsecureHTTP}}<div class="alert alert-warning">This LAN session uses unencrypted HTTP. Passwords and session cookies can be observed by other devices on the network. Prefer the HTTPS manager domain.</div>{{end}}
         {{if .Config.LastDeployError}}<div class="alert alert-danger">Last deploy error: {{.Config.LastDeployError}}</div>{{end}}
 
         <div class="card mb-3">
@@ -81,8 +85,8 @@
         </div>
 
         <div class="row row-cards mt-1">
-          <div class="col-xl-4 col-xxl-3">
-            <div class="card">
+          <div class="proxy-editor d-none" id="proxy-editor" role="dialog" aria-modal="true" aria-labelledby="proxy-form-title">
+            <div class="card proxy-editor-card">
               <div class="card-header d-flex justify-content-between align-items-center">
                 <h2 class="card-title" id="proxy-form-title">Add HTTPS proxy</h2>
                 <label class="form-check form-switch m-0">
@@ -187,14 +191,14 @@
                   <div class="form-hint" id="cf_note">{{if .LocalWarning}}Disabled because the Traefik server IP is private/local.{{end}}</div>
                   <div class="form-footer">
                     <button class="btn btn-primary" id="proxy-submit" type="submit">Create proxy</button>
-                    <button class="btn btn-outline-secondary d-none" id="proxy-cancel-edit" type="button">Cancel edit</button>
+                    <button class="btn btn-outline-secondary" id="proxy-cancel-edit" type="button">Cancel</button>
                   </div>
                 </form>
               </div>
             </div>
           </div>
 
-          <div class="col-xl-8 col-xxl-9">
+          <div class="col-12">
             <div class="card proxy-list-card">
               <div class="card-header">
                 <h2 class="card-title">Configured proxies</h2>
@@ -215,7 +219,7 @@
                   {{$root := .}}
                   {{range .Config.Proxies}}
                     <tr class="proxy-row {{.Status}} {{if .Paused}}paused{{end}}" data-host="{{.Host}}">
-                      <td><strong>{{.Host}}</strong></td>
+                      <td><a href="https://{{.Host}}" target="_blank" rel="noopener noreferrer"><strong>{{.Host}}</strong></a>{{if .ZoneName}}<div class="text-secondary small">{{.ZoneName}}</div>{{end}}</td>
                       <td>{{template "proxy_target" .}}</td>
                       <td>{{if .CreatedBy}}{{.CreatedBy}}{{else}}-{{end}}</td>
                       <td>{{template "proxy_state" .}}</td>
@@ -240,13 +244,15 @@
 </div>
 
 {{template "modal_layer" .}}
-<script>
+<script nonce="{{nonce}}">
 const serverIPIsLocal = {{if .LocalWarning}}true{{else}}false{{end}};
 const traefikHost = '{{.Config.TraefikHost}}';
 const ip = document.getElementById('backend_ip');
 const cb = document.getElementById('cf_proxy');
 const note = document.getElementById('cf_note');
 const proxyForm = document.getElementById('proxy-form');
+const proxyEditor = document.getElementById('proxy-editor');
+const openProxyEditor = document.getElementById('open-proxy-editor');
 const proxyFormTitle = document.getElementById('proxy-form-title');
 const proxySubmit = document.getElementById('proxy-submit');
 const proxyCancelEdit = document.getElementById('proxy-cancel-edit');
@@ -401,8 +407,10 @@ function locationHover(locations) {
 function stateBadge(proxy) {
   if (proxy.paused) return '<span class="badge bg-secondary-lt">paused</span>';
   if (proxy.status === 'ready') return sslReadyBadge(proxy);
+  if (proxy.status === 'renewing') return `${sslReadyBadge(proxy)}<div class="text-warning small">renewing</div>`;
+  if (proxy.status === 'expiring') return `${sslReadyBadge(proxy)}<div class="text-danger small">expiring soon</div>`;
   if (proxy.status === 'error') return '<span class="badge bg-red-lt">error</span>';
-  return '<span class="badge bg-blue-lt">creating SSL</span>';
+  return `<span class="badge bg-blue-lt">${escapeHTML((proxy.status || 'provisioning').replaceAll('_', ' '))}</span>`;
 }
 
 function sslReadyBadge(proxy) {
@@ -463,7 +471,8 @@ function actionButtons(proxy) {
 
 function cloudflareCell(proxy) {
   const mode = proxy.cloudflare_proxy ? '<span class="badge bg-green-lt">proxied</span>' : '<span class="badge bg-secondary-lt">DNS only</span>';
-  return `${mode}<div class="text-secondary small">CNAME -> ${escapeHTML(traefikHost)}</div>`;
+  const zone = proxy.zone_name ? `<div class="text-secondary small">Zone: ${escapeHTML(proxy.zone_name)}</div>` : '';
+  return `${mode}${zone}<div class="text-secondary small">CNAME -> ${escapeHTML(traefikHost)}</div>`;
 }
 
 function upsertProxy(proxy) {
@@ -477,10 +486,10 @@ function upsertProxy(proxy) {
   }
   row.className = `proxy-row ${proxy.status || 'creating'} ${proxy.paused ? 'paused' : ''}`;
   row.innerHTML = `
-    <td><strong>${proxy.host}</strong></td>
+    <td><a href="https://${encodeURI(proxy.host)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHTML(proxy.host)}</strong></a>${proxy.zone_name ? `<div class="text-secondary small">${escapeHTML(proxy.zone_name)}</div>` : ''}</td>
     <td>${targetSummary(proxy)}</td>
     <td>${proxy.created_by || '-'}</td>
-    <td>${stateBadge(proxy)}</td>
+    <td>${stateBadge(proxy)}${proxy.status_message ? `<div class="text-secondary small mt-1">${escapeHTML(proxy.status_message)}</div>` : ''}</td>
     <td>${cloudflareCell(proxy)}</td>
     <td>${actionButtons(proxy)}</td>`;
 }
@@ -531,6 +540,7 @@ async function startEditProxy(host) {
     return;
   }
   editingHost = proxy.host;
+  proxyEditor.classList.remove('d-none');
   proxyFormTitle.textContent = 'Edit HTTPS proxy';
   proxySubmit.textContent = 'Save changes';
   proxyCancelEdit.classList.remove('d-none');
@@ -548,19 +558,19 @@ async function startEditProxy(host) {
   }
   cb.checked = !!proxy.cloudflare_proxy;
   syncLoadBalancerMode();
-  proxyForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  proxyForm.elements.host.focus();
 }
 
-function resetProxyForm() {
+function resetProxyForm(closeEditor = true) {
   editingHost = '';
   proxyFormTitle.textContent = 'Add HTTPS proxy';
   proxySubmit.textContent = 'Create proxy';
   proxySubmit.disabled = false;
-  proxyCancelEdit.classList.add('d-none');
   proxyForm.reset();
   resetBackendRows([{ protocol: 'http' }]);
   resetLocationRows();
   syncLoadBalancerMode();
+  if (closeEditor) proxyEditor.classList.add('d-none');
 }
 
 async function proxyAction(action, host) {
@@ -725,7 +735,15 @@ locationList.addEventListener('click', (event) => {
 });
 addBackendButton.addEventListener('click', () => addBackendRow());
 addLocationButton.addEventListener('click', () => addLocationRow());
-proxyCancelEdit.addEventListener('click', resetProxyForm);
+openProxyEditor.addEventListener('click', () => {
+  resetProxyForm(false);
+  proxyEditor.classList.remove('d-none');
+  proxyForm.elements.host.focus();
+});
+proxyCancelEdit.addEventListener('click', () => resetProxyForm(true));
+proxyEditor.addEventListener('click', event => {
+  if (event.target === proxyEditor) resetProxyForm(true);
+});
 document.getElementById('traefik-stop-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -842,9 +860,9 @@ connectStats();
 {{define "proxy_state"}}
 {{if .Paused}}
 <span class="badge bg-secondary-lt">paused</span>
-{{else if eq .Status "ready"}}
+{{else if or (eq .Status "ready") (eq .Status "renewing") (eq .Status "expiring")}}
 <span class="cert-summary" tabindex="0">
-  <span class="badge bg-green-lt">SSL ready</span>
+  {{if eq .Status "expiring"}}<span class="badge bg-red-lt">SSL expiring</span>{{else if eq .Status "renewing"}}<span class="badge bg-yellow-lt">SSL renewing</span>{{else}}<span class="badge bg-green-lt">SSL ready</span>{{end}}
   {{if not .CertNotAfter.IsZero}}
   <div class="cert-hover">
     <div class="cert-hover-row">
@@ -871,8 +889,9 @@ connectStats();
 {{else if eq .Status "error"}}
 <span class="badge bg-red-lt">error</span>
 {{else}}
-<span class="badge bg-blue-lt">creating SSL</span>
+<span class="badge bg-blue-lt">{{.Status}}</span>
 {{end}}
+{{if .StatusMessage}}<div class="text-secondary small mt-1">{{.StatusMessage}}</div>{{end}}
 {{end}}
 
 {{define "proxy_actions"}}

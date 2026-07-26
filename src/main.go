@@ -25,11 +25,15 @@ func main() {
 	if err := os.MkdirAll(store.DataDir, 0o700); err != nil {
 		log.Fatalf("create data dir: %v", err)
 	}
-	cfg, err := lib.LoadConfig(store)
+	jsonStore, err := lib.OpenJSONStore(store)
+	if err != nil {
+		log.Fatalf("open config store: %v", err)
+	}
+	cfg, err := jsonStore.LoadConfig()
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	app := api.NewApp(store, cfg)
+	app := api.NewAppWithJSONStore(store, jsonStore, cfg)
 	handler := middleware.SecurityHeaders(middleware.LimitBody(app.Routes()))
 	log.Printf("%s listening on %s", lib.AppName, addr)
 	log.Fatal(http.ListenAndServe(addr, handler))

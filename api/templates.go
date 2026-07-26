@@ -23,6 +23,7 @@ type dashboardView struct {
 	Message      string
 	Error        string
 	LocalWarning bool
+	InsecureHTTP bool
 	CurrentUser  string
 }
 

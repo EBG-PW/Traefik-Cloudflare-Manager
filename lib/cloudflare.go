@@ -34,6 +34,23 @@ type CloudflareZone struct {
 	Name string `json:"name"`
 }
 
+func (c *CloudflareClient) FindZoneForHost(ctx context.Context, host string) (CloudflareZone, error) {
+	host = CleanHost(host)
+	labels := strings.Split(host, ".")
+	for i := 0; i < len(labels)-1; i++ {
+		name := strings.Join(labels[i:], ".")
+		var out cfResponse[[]CloudflareZone]
+		err := c.do(ctx, http.MethodGet, "/zones?name="+url.QueryEscape(name), nil, &out)
+		if err != nil {
+			return CloudflareZone{}, err
+		}
+		if len(out.Result) > 0 && strings.EqualFold(out.Result[0].Name, name) {
+			return out.Result[0], nil
+		}
+	}
+	return CloudflareZone{}, fmt.Errorf("no Cloudflare zone accessible for %q; add the zone to this account or grant Zone:Read and DNS:Edit", host)
+}
+
 type cfDNSRecord struct {
 	ID      string `json:"id"`
 	Type    string `json:"type"`
@@ -95,9 +112,7 @@ func (c *CloudflareClient) EnsureCNAMERecord(ctx context.Context, zoneID, name, 
 			cnameID = record.ID
 			continue
 		}
-		if err := c.deleteDNSRecordByID(ctx, zoneID, record.ID); err != nil {
-			return "", err
-		}
+		return "", fmt.Errorf("DNS name %s already has an incompatible %s record; remove or rename it first", name, record.Type)
 	}
 
 	payload := map[string]any{"type": "CNAME", "name": name, "content": target, "ttl": 1, "proxied": proxied}

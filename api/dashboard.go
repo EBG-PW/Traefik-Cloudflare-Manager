@@ -5,17 +5,23 @@ import (
 	"net/url"
 
 	"traefik-cloudflare-manager/lib"
+	"traefik-cloudflare-manager/models"
 )
 
 func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	cfg := a.currentConfig()
 	stats := a.docker.TraefikStats(r.Context())
+	pageError := r.URL.Query().Get("err")
+	if _, err := a.jsonStore.LoadConfig(); err != nil {
+		pageError = "Proxy store is invalid. Traefik configuration will not be overwritten until this is fixed: " + err.Error()
+	}
 	a.render(w, "dashboard.tmpl", dashboardView{
 		Config:       cfg,
 		Stats:        stats,
 		Message:      r.URL.Query().Get("msg"),
-		Error:        r.URL.Query().Get("err"),
-		LocalWarning: lib.IsPrivateIP(cfg.ServerIP),
+		Error:        pageError,
+		LocalWarning: cfg.Mode == "internal" || lib.IsPrivateIP(cfg.ServerIP),
+		InsecureHTTP: cfg.Mode == "internal" && !requestIsHTTPS(r),
 		CurrentUser:  a.currentUsername(r),
 	})
 }
@@ -46,18 +52,20 @@ func (a *App) handleStopTraefik(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) redeploy(r *http.Request) error {
 	cfg := a.currentConfig()
-	if err := lib.WriteTraefikConfig(a.store, cfg); err != nil {
+	if err := a.writeCurrentTraefikConfig(); err != nil {
 		return err
 	}
 	if err := a.deployTraefik(r.Context(), cfg); err != nil {
-		cfg.LastDeployError = err.Error()
-		_ = lib.SaveConfig(a.store, cfg)
-		a.setConfig(cfg)
+		_, _ = a.jsonStore.UpdateConfig(func(current *models.Config) error {
+			current.LastDeployError = err.Error()
+			return nil
+		})
 		return err
 	}
-	cfg.LastDeployError = ""
-	_ = lib.SaveConfig(a.store, cfg)
-	a.setConfig(cfg)
+	_, _ = a.jsonStore.UpdateConfig(func(current *models.Config) error {
+		current.LastDeployError = ""
+		return nil
+	})
 	return nil
 }
 

@@ -24,13 +24,17 @@ type Config struct {
 	Username        string        `json:"username"`
 	PasswordHash    string        `json:"password_hash"`
 	Users           []User        `json:"users"`
-	Proxies         []ProxyConfig `json:"proxies"`
+	Proxies         []ProxyConfig `json:"proxies,omitempty"`
 	LastDeployError string        `json:"last_deploy_error,omitempty"`
 	UpdatedAt       time.Time     `json:"updated_at"`
 }
 
 type ProxyConfig struct {
+	SchemaVersion    int        `json:"schema_version,omitempty"`
+	Revision         uint64     `json:"revision,omitempty"`
 	Host             string     `json:"host"`
+	ZoneID           string     `json:"zone_id,omitempty"`
+	ZoneName         string     `json:"zone_name,omitempty"`
 	Protocol         string     `json:"protocol"`
 	IP               string     `json:"ip"`
 	Port             int        `json:"port"`
@@ -48,6 +52,7 @@ type ProxyConfig struct {
 	CertNotBefore    time.Time  `json:"cert_not_before,omitempty"`
 	CertNotAfter     time.Time  `json:"cert_not_after,omitempty"`
 	CertIssuer       string     `json:"cert_issuer,omitempty"`
+	NextRetry        time.Time  `json:"next_retry,omitempty"`
 	CreatedBy        string     `json:"created_by,omitempty"`
 	LastChecked      time.Time  `json:"last_checked,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`

@@ -87,15 +87,28 @@ func (a *App) handleAPIUserByName(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "username is required")
 		return
 	}
-	if r.Method != http.MethodDelete {
+	switch r.Method {
+	case http.MethodDelete:
+		if err := a.deleteUser(username, a.currentUsername(r)); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	case http.MethodPut:
+		var input userInput
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		if err := a.setUserPassword(username, input.Password); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.revokeUserSessions(username)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "password_updated"})
+	default:
 		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
 	}
-	if err := a.deleteUser(username, a.currentUsername(r)); err != nil {
-		apiError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (a *App) addUser(input userInput) error {
@@ -103,8 +116,8 @@ func (a *App) addUser(input userInput) error {
 	if username == "" || strings.Contains(username, ":") {
 		return errString("Username is required and cannot contain ':'.")
 	}
-	if len(input.Password) < 8 {
-		return errString("Password must be at least 8 characters.")
+	if len(input.Password) < 12 {
+		return errString("Password must be at least 12 characters.")
 	}
 	cfg := a.currentConfig()
 	for _, user := range lib.TraefikUsers(cfg) {
@@ -112,18 +125,99 @@ func (a *App) addUser(input userInput) error {
 			return errString("User already exists.")
 		}
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), 12)
 	if err != nil {
 		return errString("Could not hash password.")
 	}
-	cfg.Users = append(lib.TraefikUsers(cfg), models.User{Username: username, PasswordHash: string(hash), CreatedAt: time.Now().UTC()})
-	if err := lib.WriteTraefikConfig(a.store, cfg); err != nil {
-		return errString("Could not write Traefik config: " + err.Error())
-	}
-	if err := lib.SaveConfig(a.store, cfg); err != nil {
+	cfg, err = a.jsonStore.UpdateConfig(func(current *models.Config) error {
+		for _, user := range lib.TraefikUsers(current) {
+			if strings.EqualFold(user.Username, username) {
+				return errString("User already exists.")
+			}
+		}
+		current.Users = append(lib.TraefikUsers(current), models.User{Username: username, PasswordHash: string(hash), CreatedAt: time.Now().UTC()})
+		return nil
+	})
+	if err != nil {
 		return errString("Could not save config: " + err.Error())
 	}
-	a.setConfig(cfg)
+	if err := a.writeCurrentTraefikConfig(); err != nil {
+		return errString("Could not write Traefik config: " + err.Error())
+	}
+	return nil
+}
+
+func (a *App) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		redirectUsersErr(w, r, "Could not read password form.")
+		return
+	}
+	username := a.currentUsername(r)
+	if !userMatches(a.currentConfig(), username, r.FormValue("current_password")) {
+		redirectUsersErr(w, r, "Current password is incorrect.")
+		return
+	}
+	if err := a.setUserPassword(username, r.FormValue("new_password")); err != nil {
+		redirectUsersErr(w, r, err.Error())
+		return
+	}
+	a.revokeUserSessions(username)
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+func (a *App) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		redirectUsersErr(w, r, "Could not read reset form.")
+		return
+	}
+	username := strings.TrimSpace(r.FormValue("username"))
+	if err := a.setUserPassword(username, r.FormValue("new_password")); err != nil {
+		redirectUsersErr(w, r, err.Error())
+		return
+	}
+	a.revokeUserSessions(username)
+	http.Redirect(w, r, "/users?msg="+url.QueryEscape("Password reset. Existing sessions were revoked."), http.StatusSeeOther)
+}
+
+func (a *App) setUserPassword(username, password string) error {
+	if len(password) < 12 {
+		return errString("Password must be at least 12 characters.")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	if err != nil {
+		return errString("Could not hash password.")
+	}
+	found := false
+	_, err = a.jsonStore.UpdateConfig(func(current *models.Config) error {
+		for i := range current.Users {
+			if current.Users[i].Username == username {
+				current.Users[i].PasswordHash = string(hash)
+				found = true
+			}
+		}
+		if !found {
+			return errString("User not found.")
+		}
+		if current.Username == username {
+			current.PasswordHash = string(hash)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := a.writeCurrentTraefikConfig(); err != nil {
+		return errString("Could not write Traefik config: " + err.Error())
+	}
+	a.revokeUserSessions(username)
 	return nil
 }
 
@@ -149,18 +243,37 @@ func (a *App) deleteUser(username, currentUser string) error {
 	if !found {
 		return errString("User not found.")
 	}
-	cfg.Users = next
-	if cfg.Username == username && len(next) > 0 {
-		cfg.Username = next[0].Username
-		cfg.PasswordHash = next[0].PasswordHash
-	}
-	if err := lib.WriteTraefikConfig(a.store, cfg); err != nil {
-		return errString("Could not write Traefik config: " + err.Error())
-	}
-	if err := lib.SaveConfig(a.store, cfg); err != nil {
+	cfg, err := a.jsonStore.UpdateConfig(func(current *models.Config) error {
+		currentUsers := lib.TraefikUsers(current)
+		if len(currentUsers) <= 1 {
+			return errString("Cannot remove the last user.")
+		}
+		freshNext := make([]models.User, 0, len(currentUsers)-1)
+		foundCurrent := false
+		for _, user := range currentUsers {
+			if user.Username == username {
+				foundCurrent = true
+				continue
+			}
+			freshNext = append(freshNext, user)
+		}
+		if !foundCurrent {
+			return errString("User not found.")
+		}
+		current.Users = freshNext
+		if current.Username == username && len(freshNext) > 0 {
+			current.Username = freshNext[0].Username
+			current.PasswordHash = freshNext[0].PasswordHash
+		}
+		return nil
+	})
+	if err != nil {
 		return errString("Could not save config: " + err.Error())
 	}
-	a.setConfig(cfg)
+	if err := a.writeCurrentTraefikConfig(); err != nil {
+		return errString("Could not write Traefik config: " + err.Error())
+	}
+	a.revokeUserSessions(username)
 	return nil
 }
 

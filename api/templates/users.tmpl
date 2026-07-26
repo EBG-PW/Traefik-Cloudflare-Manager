@@ -39,7 +39,7 @@
                   </div>
                   <div class="mb-3">
                     <label class="form-label">Password</label>
-                    <input class="form-control" name="password" type="password" autocomplete="new-password" minlength="8" required>
+                    <input class="form-control" name="password" type="password" autocomplete="new-password" minlength="12" required>
                   </div>
                   <button class="btn btn-primary" type="submit">Create user</button>
                 </form>
@@ -68,6 +68,11 @@
                     <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
                     <td>
                       {{if ne $.CurrentUser .Username}}
+                      <form method="post" action="/users/reset" class="d-inline-flex gap-1 me-2">
+                        <input type="hidden" name="username" value="{{.Username}}">
+                        <input class="form-control form-control-sm" name="new_password" type="password" minlength="12" placeholder="New password" required>
+                        <button class="btn btn-outline-primary btn-sm" type="submit">Reset</button>
+                      </form>
                       <form method="post" action="/users/delete" class="user-delete-form" data-username="{{.Username}}">
                         <input type="hidden" name="username" value="{{.Username}}">
                         <button class="btn btn-outline-danger btn-sm" type="submit">Delete</button>
@@ -82,12 +87,23 @@
             </div>
           </div>
         </div>
+
+        <div class="card mt-3">
+          <div class="card-header"><h2 class="card-title">Change my password</h2></div>
+          <div class="card-body">
+            <form method="post" action="/users/password" class="row g-3">
+              <div class="col-md-5"><label class="form-label">Current password</label><input class="form-control" name="current_password" type="password" autocomplete="current-password" required></div>
+              <div class="col-md-5"><label class="form-label">New password</label><input class="form-control" name="new_password" type="password" autocomplete="new-password" minlength="12" required></div>
+              <div class="col-md-2 d-flex align-items-end"><button class="btn btn-primary w-100" type="submit">Change</button></div>
+            </form>
+          </div>
+        </div>
       </div>
     </div>
   </main>
 </div>
 {{template "modal_layer" .}}
-<script>
+<script nonce="{{nonce}}">
 document.querySelectorAll('.user-delete-form').forEach(form => {
   form.addEventListener('submit', async event => {
     event.preventDefault();
@@ -123,7 +139,7 @@ document.querySelectorAll('.user-delete-form').forEach(form => {
         <span>Traefik: <strong>{{.Config.TraefikHost}}</strong></span>
         <span>Manager: <strong>{{.Config.ManagerHost}}</strong></span>
       </div>
-      <a class="btn btn-outline-secondary" href="/logout">Logout</a>
+      <form method="post" action="/logout"><button class="btn btn-outline-secondary" type="submit">Logout</button></form>
     </div>
   </div>
 </header>

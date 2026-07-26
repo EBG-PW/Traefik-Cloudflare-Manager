@@ -76,12 +76,17 @@ func (a *App) handleProxyDelete(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAPIProxies(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		proxies := a.currentConfig().Proxies
+		cfg, err := a.jsonStore.LoadConfig()
+		if err != nil {
+			apiError(w, http.StatusInternalServerError, "proxy store is invalid: "+err.Error())
+			return
+		}
+		proxies := cfg.Proxies
 		if proxies == nil {
 			proxies = []models.ProxyConfig{}
 		}
 		for _, proxy := range proxies {
-			if proxy.Paused || proxy.Status == "ready" {
+			if proxy.Paused || proxy.SSLReady {
 				continue
 			}
 			a.scheduleProxyReadyCheck(proxy.Host)
@@ -95,7 +100,7 @@ func (a *App) handleAPIProxies(w http.ResponseWriter, r *http.Request) {
 		}
 		proxy, err := a.saveProxy(r.Context(), input, a.currentUsername(r))
 		if err != nil {
-			apiError(w, http.StatusBadRequest, err.Error())
+			apiError(w, proxyErrorStatus(err), err.Error())
 			return
 		}
 		writeJSON(w, http.StatusCreated, proxy)
@@ -132,7 +137,7 @@ func (a *App) handleAPIProxyByHost(w http.ResponseWriter, r *http.Request) {
 		}
 		proxy, err := a.updateProxy(r.Context(), host, input, a.currentUsername(r))
 		if err != nil {
-			apiError(w, http.StatusBadRequest, err.Error())
+			apiError(w, proxyErrorStatus(err), err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, proxy)
@@ -191,14 +196,17 @@ func (a *App) upsertProxy(ctx context.Context, oldHost string, input proxyInput,
 	}
 	primary := backends[0]
 	strategy, sticky := normalizeLoadBalancerOptions(input)
-	if !lib.ValidHost(host) || !strings.HasSuffix(host, "."+cfg.Domain) {
-		return models.ProxyConfig{}, errString("Proxy domain must be a host inside " + cfg.Domain + ".")
+	if !lib.ValidHost(host) {
+		return models.ProxyConfig{}, errString("Proxy domain is not a valid hostname.")
 	}
 	if host == cfg.TraefikHost || host == cfg.ManagerHost {
 		return models.ProxyConfig{}, errString("Proxy domain cannot be the Traefik or manager host.")
 	}
-	if input.CloudflareProxy && (lib.IsPrivateIP(cfg.ServerIP) || backendsContainPrivateIP(backends) || locationsContainPrivateIP(locations)) {
-		return models.ProxyConfig{}, errString("Cloudflare proxy cannot be enabled for local/private IPs.")
+	if cfg.Mode == "internal" {
+		input.CloudflareProxy = false
+	}
+	if input.CloudflareProxy && lib.IsPrivateIP(cfg.ServerIP) {
+		return models.ProxyConfig{}, errString("Cloudflare proxy cannot be enabled because the Traefik server IP is private/local.")
 	}
 	oldIndex := -1
 	conflict := false
@@ -218,70 +226,104 @@ func (a *App) upsertProxy(ctx context.Context, oldHost string, input proxyInput,
 	if conflict {
 		return models.ProxyConfig{}, errString("Another proxy already uses " + host + ".")
 	}
-	recordID, err := lib.NewCloudflareClient(cfg.CloudflareToken).EnsureCNAMERecord(ctx, cfg.ZoneID, host, cfg.TraefikHost, input.CloudflareProxy)
+	cf := lib.NewCloudflareClient(cfg.CloudflareToken)
+	zone, err := cf.FindZoneForHost(ctx, host)
 	if err != nil {
-		return models.ProxyConfig{}, errString("Cloudflare DNS update failed: " + err.Error())
+		return models.ProxyConfig{}, errString("Cloudflare zone lookup failed: " + err.Error())
 	}
 	now := time.Now().UTC()
 	proxy := models.ProxyConfig{
-		Host:             host,
-		Protocol:         primary.Protocol,
-		IP:               primary.IP,
-		Port:             primary.Port,
-		LoadBalancer:     input.LoadBalancer || len(backends) > 1,
-		Strategy:         strategy,
-		Sticky:           sticky,
-		Backends:         backends,
-		Locations:        locations,
-		CloudflareProxy:  input.CloudflareProxy,
-		CloudflareRecord: recordID,
-		Status:           "creating",
-		StatusMessage:    "DNS and Traefik config are written. Waiting for HTTPS certificate.",
-		CreatedBy:        actor,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		Host:            host,
+		ZoneID:          zone.ID,
+		ZoneName:        zone.Name,
+		Protocol:        primary.Protocol,
+		IP:              primary.IP,
+		Port:            primary.Port,
+		LoadBalancer:    input.LoadBalancer || len(backends) > 1,
+		Strategy:        strategy,
+		Sticky:          sticky,
+		Backends:        backends,
+		Locations:       locations,
+		CloudflareProxy: input.CloudflareProxy,
+		Status:          "provisioning",
+		StatusMessage:   "Saved. Waiting for Cloudflare DNS and Traefik configuration.",
+		CreatedBy:       actor,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
-	replaced := false
 	if oldIndex >= 0 {
 		proxy.CreatedAt = oldProxy.CreatedAt
 		proxy.CreatedBy = oldProxy.CreatedBy
 		proxy.Paused = oldProxy.Paused
-		cfg.Proxies[oldIndex] = proxy
-		replaced = true
-	} else {
-		for i := range cfg.Proxies {
-			if cfg.Proxies[i].Host != host {
-				continue
-			}
-			proxy.CreatedAt = cfg.Proxies[i].CreatedAt
-			proxy.CreatedBy = cfg.Proxies[i].CreatedBy
-			proxy.Paused = cfg.Proxies[i].Paused
-			cfg.Proxies[i] = proxy
-			replaced = true
-			break
-		}
 	}
-	if !replaced {
-		if oldHost != "" {
-			return models.ProxyConfig{}, errString("Proxy not found.")
-		}
-		cfg.Proxies = append(cfg.Proxies, proxy)
+	if oldHost == "" {
+		proxy, err = a.jsonStore.CreateProxy(proxy)
+	} else {
+		proxy, err = a.jsonStore.ReplaceProxy(oldHost, proxy)
+	}
+	if err != nil {
+		return models.ProxyConfig{}, errString("Could not save proxy: " + err.Error())
+	}
+	if err := a.provisionProxy(ctx, host); err != nil {
+		return proxy, err
 	}
 	if oldHost != "" && oldHost != host {
-		if err := lib.NewCloudflareClient(cfg.CloudflareToken).DeleteDNSRecord(ctx, cfg.ZoneID, oldProxy.CloudflareRecord, oldProxy.Host); err != nil {
-			return models.ProxyConfig{}, errString("Old Cloudflare DNS delete failed: " + err.Error())
+		zoneID := oldProxy.ZoneID
+		if zoneID == "" {
+			zoneID = cfg.ZoneID
+		}
+		if err := cf.DeleteDNSRecord(ctx, zoneID, oldProxy.CloudflareRecord, oldProxy.Host); err != nil {
+			a.markProxyError(host, "Old Cloudflare DNS delete failed: "+err.Error(), 2*time.Minute)
+			return proxy, errString("Old Cloudflare DNS delete failed: " + err.Error())
 		}
 	}
-	sort.Slice(cfg.Proxies, func(i, j int) bool { return cfg.Proxies[i].Host < cfg.Proxies[j].Host })
-	if err := lib.WriteTraefikConfig(a.store, cfg); err != nil {
-		return models.ProxyConfig{}, errString("Could not write Traefik config: " + err.Error())
-	}
-	if err := lib.SaveConfig(a.store, cfg); err != nil {
-		return models.ProxyConfig{}, errString("Could not save config: " + err.Error())
-	}
-	a.setConfig(cfg)
 	a.scheduleProxyReadyCheck(host)
-	return proxy, nil
+	return a.jsonStore.GetProxy(host)
+}
+
+func (a *App) provisionProxy(ctx context.Context, host string) error {
+	cfg := a.currentConfig()
+	proxy, err := a.jsonStore.GetProxy(host)
+	if err != nil {
+		return errString("Proxy not found.")
+	}
+	zoneID := proxy.ZoneID
+	if zoneID == "" {
+		zoneID = cfg.ZoneID
+	}
+	recordID, err := lib.NewCloudflareClient(cfg.CloudflareToken).EnsureCNAMERecord(ctx, zoneID, proxy.Host, cfg.TraefikHost, proxy.CloudflareProxy)
+	if err != nil {
+		a.markProxyError(host, "Cloudflare DNS update failed: "+err.Error(), 2*time.Minute)
+		return errString("Cloudflare DNS update failed: " + err.Error())
+	}
+	_, err = a.jsonStore.UpdateProxy(host, func(current *models.ProxyConfig) error {
+		current.CloudflareRecord = recordID
+		current.Status = "waiting_certificate"
+		current.StatusMessage = "DNS and Traefik configuration are ready. Waiting for certificate."
+		current.UpdatedAt = time.Now().UTC()
+		current.NextRetry = time.Time{}
+		return nil
+	})
+	if err != nil {
+		return errString("Could not update proxy: " + err.Error())
+	}
+	if err := a.writeCurrentTraefikConfig(); err != nil {
+		a.markProxyError(host, "Could not write Traefik config: "+err.Error(), 2*time.Minute)
+		return errString("Could not write Traefik config: " + err.Error())
+	}
+	return nil
+}
+
+func (a *App) markProxyError(host, message string, retry time.Duration) {
+	_, _ = a.jsonStore.UpdateProxy(host, func(proxy *models.ProxyConfig) error {
+		proxy.Status = "error"
+		proxy.SSLReady = false
+		proxy.StatusMessage = message
+		proxy.LastChecked = time.Now().UTC()
+		proxy.UpdatedAt = proxy.LastChecked
+		proxy.NextRetry = proxy.LastChecked.Add(retry)
+		return nil
+	})
 }
 
 func normalizeBackends(input proxyInput) ([]models.Backend, error) {
@@ -386,85 +428,72 @@ func normalizeStrategy(strategy string) string {
 	}
 }
 
-func backendsContainPrivateIP(backends []models.Backend) bool {
-	for _, backend := range backends {
-		if lib.IsPrivateIP(backend.IP) {
-			return true
-		}
-	}
-	return false
-}
-
-func locationsContainPrivateIP(locations []models.Location) bool {
-	for _, location := range locations {
-		if lib.IsPrivateIP(location.IP) {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *App) deleteProxy(ctx context.Context, host string) (string, error) {
-	cfg := a.currentConfig()
-	next := cfg.Proxies[:0]
-	found := false
-	var removed models.ProxyConfig
-	for _, p := range cfg.Proxies {
-		if p.Host == host {
-			found = true
-			removed = p
-			continue
-		}
-		next = append(next, p)
-	}
-	if !found {
+	removed, err := a.jsonStore.UpdateProxy(host, func(proxy *models.ProxyConfig) error {
+		proxy.Status = "deleting"
+		proxy.StatusMessage = "Removing DNS and Traefik configuration."
+		proxy.UpdatedAt = time.Now().UTC()
+		return nil
+	})
+	if err != nil {
 		return "", errString("Proxy not found.")
 	}
-	if err := lib.NewCloudflareClient(cfg.CloudflareToken).DeleteDNSRecord(ctx, cfg.ZoneID, removed.CloudflareRecord, removed.Host); err != nil {
-		return "", errString("Cloudflare DNS delete failed: " + err.Error())
+	if err := a.finishDeleteProxy(ctx, removed); err != nil {
+		_, _ = a.jsonStore.UpdateProxy(host, func(proxy *models.ProxyConfig) error {
+			proxy.Status = "deleting"
+			proxy.StatusMessage = "Delete retry pending: " + err.Error()
+			proxy.NextRetry = time.Now().UTC().Add(2 * time.Minute)
+			proxy.UpdatedAt = time.Now().UTC()
+			return nil
+		})
+		return "", err
 	}
-	cfg.Proxies = next
-	if err := lib.WriteTraefikConfig(a.store, cfg); err != nil {
-		return "", errString("Could not write Traefik config: " + err.Error())
-	}
-	if err := lib.SaveConfig(a.store, cfg); err != nil {
-		return "", errString("Could not save config: " + err.Error())
-	}
-	a.setConfig(cfg)
 	msg := "Proxy " + host + " removed. Cloudflare DNS record was deleted."
 	log.Printf("proxy removed host=%s dns_record=%s dns_deleted=true", host, removed.CloudflareRecord)
 	return msg, nil
 }
 
-func (a *App) setProxyPaused(host string, paused bool) (models.ProxyConfig, error) {
+func (a *App) finishDeleteProxy(ctx context.Context, removed models.ProxyConfig) error {
 	cfg := a.currentConfig()
-	for i := range cfg.Proxies {
-		if cfg.Proxies[i].Host != host {
-			continue
-		}
-		cfg.Proxies[i].Paused = paused
-		cfg.Proxies[i].UpdatedAt = time.Now().UTC()
-		if paused {
-			cfg.Proxies[i].Status = "paused"
-			cfg.Proxies[i].StatusMessage = "Paused in Traefik. DNS record is still present."
-		} else {
-			cfg.Proxies[i].Status = "creating"
-			cfg.Proxies[i].StatusMessage = "Enabled in Traefik. Waiting for HTTPS certificate."
-		}
-		if err := lib.WriteTraefikConfig(a.store, cfg); err != nil {
-			return models.ProxyConfig{}, errString("Could not write Traefik config: " + err.Error())
-		}
-		if err := lib.SaveConfig(a.store, cfg); err != nil {
-			return models.ProxyConfig{}, errString("Could not save config: " + err.Error())
-		}
-		a.setConfig(cfg)
-		proxy := cfg.Proxies[i]
-		if !paused {
-			a.scheduleProxyReadyCheck(host)
-		}
-		return proxy, nil
+	zoneID := removed.ZoneID
+	if zoneID == "" {
+		zoneID = cfg.ZoneID
 	}
-	return models.ProxyConfig{}, errString("Proxy not found.")
+	if err := lib.NewCloudflareClient(cfg.CloudflareToken).DeleteDNSRecord(ctx, zoneID, removed.CloudflareRecord, removed.Host); err != nil {
+		return errString("Cloudflare DNS delete failed: " + err.Error())
+	}
+	if err := a.writeCurrentTraefikConfig(); err != nil {
+		return errString("Could not write Traefik config: " + err.Error())
+	}
+	if err := a.jsonStore.DeleteProxy(removed.Host); err != nil {
+		return errString("Could not remove proxy file: " + err.Error())
+	}
+	return nil
+}
+
+func (a *App) setProxyPaused(host string, paused bool) (models.ProxyConfig, error) {
+	proxy, err := a.jsonStore.UpdateProxy(host, func(proxy *models.ProxyConfig) error {
+		proxy.Paused = paused
+		proxy.UpdatedAt = time.Now().UTC()
+		if paused {
+			proxy.Status = "paused"
+			proxy.StatusMessage = "Paused in Traefik. DNS record is still present."
+		} else {
+			proxy.Status = "waiting_certificate"
+			proxy.StatusMessage = "Enabled in Traefik. Waiting for HTTPS certificate."
+		}
+		return nil
+	})
+	if err != nil {
+		return models.ProxyConfig{}, errString("Proxy not found.")
+	}
+	if err := a.writeCurrentTraefikConfig(); err != nil {
+		return models.ProxyConfig{}, errString("Could not write Traefik config: " + err.Error())
+	}
+	if !paused {
+		a.scheduleProxyReadyCheck(host)
+	}
+	return proxy, nil
 }
 
 func (a *App) startProxyReconciler() {
@@ -488,58 +517,90 @@ func (a *App) reconcileProxiesOnce(ctx context.Context) {
 		return
 	}
 	cf := lib.NewCloudflareClient(cfg.CloudflareToken)
-	changed := false
 	now := time.Now().UTC()
 
-	for i := range cfg.Proxies {
-		proxy := &cfg.Proxies[i]
-		recordID, err := cf.EnsureCNAMERecord(ctx, cfg.ZoneID, proxy.Host, cfg.TraefikHost, proxy.CloudflareProxy)
+	for _, snapshot := range cfg.Proxies {
+		proxy := snapshot
+		if proxy.Status == "deleting" {
+			if proxy.NextRetry.IsZero() || !proxy.NextRetry.After(now) {
+				if err := a.finishDeleteProxy(ctx, proxy); err != nil {
+					log.Printf("proxy delete reconcile failed host=%s: %v", proxy.Host, err)
+				}
+			}
+			continue
+		}
+		zoneID := proxy.ZoneID
+		if zoneID == "" {
+			zoneID = cfg.ZoneID
+		}
+		recordID, err := cf.EnsureCNAMERecord(ctx, zoneID, proxy.Host, cfg.TraefikHost, proxy.CloudflareProxy)
 		if err != nil {
-			proxy.Status = "error"
-			proxy.StatusMessage = "Cloudflare DNS check failed: " + err.Error()
-			proxy.LastChecked = now
-			proxy.UpdatedAt = now
-			changed = true
+			a.markProxyError(proxy.Host, "Cloudflare DNS check failed: "+err.Error(), 2*time.Minute)
 			log.Printf("proxy reconcile cloudflare failed host=%s: %v", proxy.Host, err)
 			continue
 		}
 		if recordID != "" && recordID != proxy.CloudflareRecord {
-			proxy.CloudflareRecord = recordID
-			proxy.UpdatedAt = now
-			changed = true
+			_, _ = a.jsonStore.UpdateProxy(proxy.Host, func(current *models.ProxyConfig) error {
+				current.CloudflareRecord = recordID
+				current.UpdatedAt = now
+				return nil
+			})
 		}
 		if proxy.Paused {
 			continue
 		}
 
 		checkCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		cert, err := lib.CheckHTTPSCertificate(checkCtx, proxy.Host)
+		cert, err := a.checkProxyCertificate(checkCtx, proxy.Host)
 		cancel()
 		proxy.LastChecked = now
 		if err != nil {
-			proxy.SSLReady = false
-			proxy.Status = "creating"
-			proxy.StatusMessage = "HTTPS certificate is still being checked: " + err.Error()
+			status := "waiting_certificate"
+			if !proxy.CreatedAt.IsZero() && now.Sub(proxy.CreatedAt) > 10*time.Minute {
+				status = "error"
+			}
+			_, _ = a.jsonStore.UpdateProxy(proxy.Host, func(current *models.ProxyConfig) error {
+				current.SSLReady = false
+				current.Status = status
+				current.StatusMessage = "HTTPS certificate check failed: " + err.Error()
+				current.LastChecked = now
+				current.UpdatedAt = now
+				current.NextRetry = now.Add(2 * time.Minute)
+				return nil
+			})
 		} else {
-			proxy.SSLReady = true
-			proxy.Status = "ready"
-			proxy.StatusMessage = "HTTPS certificate is ready."
-			proxy.CertNotBefore = cert.NotBefore
-			proxy.CertNotAfter = cert.NotAfter
-			proxy.CertIssuer = cert.Issuer
+			status, message := certificateStatus(cert.NotAfter, now)
+			_, _ = a.jsonStore.UpdateProxy(proxy.Host, func(current *models.ProxyConfig) error {
+				current.SSLReady = true
+				current.Status = status
+				current.StatusMessage = message
+				current.CertNotBefore = cert.NotBefore
+				current.CertNotAfter = cert.NotAfter
+				current.CertIssuer = cert.Issuer
+				current.LastChecked = now
+				current.UpdatedAt = now
+				current.NextRetry = time.Time{}
+				return nil
+			})
 		}
-		proxy.UpdatedAt = now
-		changed = true
 	}
+	if err := a.writeCurrentTraefikConfig(); err != nil {
+		log.Printf("proxy reconcile render failed: %v", err)
+	}
+}
 
-	if !changed {
-		return
+func certificateStatus(notAfter, now time.Time) (string, string) {
+	remaining := notAfter.Sub(now)
+	switch {
+	case remaining <= 0:
+		return "error", "HTTPS certificate is expired."
+	case remaining <= 7*24*time.Hour:
+		return "expiring", "HTTPS certificate expires in less than 7 days."
+	case remaining <= 30*24*time.Hour:
+		return "renewing", "HTTPS certificate is within Traefik's renewal window."
+	default:
+		return "ready", "HTTPS certificate is ready."
 	}
-	if err := lib.SaveConfig(a.store, cfg); err != nil {
-		log.Printf("proxy reconcile save failed: %v", err)
-		return
-	}
-	a.setConfig(cfg)
 }
 
 func (a *App) scheduleProxyReadyCheck(host string) {
@@ -566,34 +627,65 @@ func (a *App) scheduleProxyReadyCheck(host string) {
 func (a *App) waitProxyReady(host string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	cert, err := lib.WaitForHTTPSCertificate(ctx, host, 5*time.Second)
-	if err != nil {
-		a.updateProxyStatus(host, "creating", false, "HTTPS certificate is still being checked: "+err.Error(), nil)
-		return
+	var cert lib.TLSCertificateInfo
+	var err error
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		checkCtx, checkCancel := context.WithTimeout(ctx, 10*time.Second)
+		cert, err = a.checkProxyCertificate(checkCtx, host)
+		checkCancel()
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			a.updateProxyStatus(host, "error", false, "HTTPS certificate check timed out: "+err.Error(), nil)
+			return
+		case <-ticker.C:
+		}
 	}
 	a.updateProxyStatus(host, "ready", true, "HTTPS certificate is ready.", &cert)
 }
 
-func (a *App) updateProxyStatus(host, status string, sslReady bool, msg string, cert *lib.TLSCertificateInfo) {
-	cfg := a.currentConfig()
-	for i := range cfg.Proxies {
-		if cfg.Proxies[i].Host != host || cfg.Proxies[i].Paused {
-			continue
-		}
-		cfg.Proxies[i].Status = status
-		cfg.Proxies[i].SSLReady = sslReady
-		cfg.Proxies[i].StatusMessage = msg
-		if cert != nil {
-			cfg.Proxies[i].CertNotBefore = cert.NotBefore
-			cfg.Proxies[i].CertNotAfter = cert.NotAfter
-			cfg.Proxies[i].CertIssuer = cert.Issuer
-		}
-		cfg.Proxies[i].LastChecked = time.Now().UTC()
-		cfg.Proxies[i].UpdatedAt = time.Now().UTC()
-		_ = lib.SaveConfig(a.store, cfg)
-		a.setConfig(cfg)
-		return
+func (a *App) checkProxyCertificate(ctx context.Context, host string) (lib.TLSCertificateInfo, error) {
+	_, storedErr := lib.ReadACMECertificate(a.store.DataDir, host)
+	address := lib.Env("TCM_TRAEFIK_TLS_ADDR", "traefik:443")
+	served, servedErr := lib.CheckHTTPSCertificateAt(ctx, address, host)
+	if servedErr == nil {
+		return served, nil
 	}
+	cfg := a.currentConfig()
+	if cfg != nil && cfg.Mode == "external" {
+		if external, err := lib.CheckHTTPSCertificate(ctx, host); err == nil {
+			return external, nil
+		}
+	}
+	if storedErr == nil {
+		return lib.TLSCertificateInfo{}, errString("certificate exists in acme.json but Traefik is not serving it: " + servedErr.Error())
+	}
+	return lib.TLSCertificateInfo{}, errString("certificate is not ready: " + storedErr.Error() + "; Traefik probe: " + servedErr.Error())
+}
+
+func (a *App) updateProxyStatus(host, status string, sslReady bool, msg string, cert *lib.TLSCertificateInfo) {
+	_, _ = a.jsonStore.UpdateProxy(host, func(proxy *models.ProxyConfig) error {
+		if proxy.Paused {
+			return nil
+		}
+		proxy.Status = status
+		proxy.SSLReady = sslReady
+		proxy.StatusMessage = msg
+		if cert != nil {
+			proxy.CertNotBefore = cert.NotBefore
+			proxy.CertNotAfter = cert.NotAfter
+			proxy.CertIssuer = cert.Issuer
+			proxy.Status, proxy.StatusMessage = certificateStatus(cert.NotAfter, time.Now().UTC())
+		}
+		proxy.LastChecked = time.Now().UTC()
+		proxy.UpdatedAt = proxy.LastChecked
+		proxy.NextRetry = time.Time{}
+		return nil
+	})
 }
 
 func redirectErr(w http.ResponseWriter, r *http.Request, msg string) {
@@ -603,3 +695,17 @@ func redirectErr(w http.ResponseWriter, r *http.Request, msg string) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+func proxyErrorStatus(err error) int {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "zone lookup"), strings.Contains(message, "no cloudflare zone"), strings.Contains(message, "permission"):
+		return http.StatusUnprocessableEntity
+	case strings.Contains(message, "already exists"), strings.Contains(message, "already uses"), strings.Contains(message, "incompatible"):
+		return http.StatusConflict
+	case strings.Contains(message, "cloudflare dns"), strings.Contains(message, "traefik config"):
+		return http.StatusBadGateway
+	default:
+		return http.StatusBadRequest
+	}
+}

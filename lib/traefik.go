@@ -34,7 +34,7 @@ func WriteTraefikConfig(store *models.Store, cfg *models.Config) error {
 	writeRouter(&b, "traefik-dashboard", cfg.TraefikHost, "api@internal", "dashboard-auth")
 	writeRouter(&b, "manager", cfg.ManagerHost, "manager-service", "dashboard-auth")
 	for _, p := range cfg.Proxies {
-		if p.Paused {
+		if p.Paused || p.Status == "deleting" {
 			continue
 		}
 		writeRouter(&b, RouterName(p.Host), p.Host, RouterName(p.Host)+"-service", "")
@@ -55,7 +55,7 @@ func WriteTraefikConfig(store *models.Store, cfg *models.Config) error {
 	b.WriteString("        servers:\n")
 	b.WriteString("          - url: " + yamlQuote(managerServiceURL(store)) + "\n")
 	for _, p := range cfg.Proxies {
-		if p.Paused {
+		if p.Paused || p.Status == "deleting" {
 			continue
 		}
 		b.WriteString("    " + RouterName(p.Host) + "-service:\n")
@@ -85,7 +85,7 @@ func WriteTraefikConfig(store *models.Store, cfg *models.Config) error {
 	}
 
 	path := filepath.Join(configDir, TraefikConfigFile)
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	return atomicWrite(path, []byte(b.String()), 0o600)
 }
 
 func managerServiceURL(store *models.Store) string {
