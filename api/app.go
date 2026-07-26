@@ -36,6 +36,17 @@ type loginAttempt struct {
 //go:embed templates/*.tmpl
 var templatesFS embed.FS
 
+var templateFunctions = template.FuncMap{
+	"bytes":         lib.FormatBytes,
+	"strategyLabel": lib.LoadBalancerStrategyLabel,
+	"certTime":      lib.FormatCertTime,
+	"certDuration":  lib.FormatCertDuration,
+	"add":           func(a, b int) int { return a + b },
+	"nonce":         func() string { return "" },
+}
+
+var parsedTemplates = template.Must(template.New("").Funcs(templateFunctions).ParseFS(templatesFS, "templates/*.tmpl"))
+
 type App struct {
 	mu                sync.RWMutex
 	cfg               *models.Config
@@ -51,6 +62,11 @@ type App struct {
 	reconcileMu       sync.Mutex
 	statsMu           sync.Mutex
 	statsHist         []statsSample
+	versionMu         sync.Mutex
+	versionInfo       models.TraefikVersionInfo
+	versionNextCheck  time.Time
+	versionChecking   bool
+	versionGeneration uint64
 }
 
 func NewApp(store *models.Store, cfg *models.Config) *App {
@@ -117,6 +133,7 @@ func (a *App) Routes() http.Handler {
 	apiMux.HandleFunc("/api/traefik/redeploy", a.handleAPIRedeploy)
 	apiMux.HandleFunc("/api/traefik/stop", a.handleAPIStopTraefik)
 	apiMux.HandleFunc("/api/traefik/logs", a.handleAPITraefikLogs)
+	apiMux.HandleFunc("/api/traefik/logs/ws", a.handleAPITraefikLogsWS)
 	apiMux.HandleFunc("/api/traefik/stats/ws", a.handleAPIStatsWS)
 	apiMux.HandleFunc("/api/traefik/stats", a.handleAPIStats)
 	mux.Handle("/api/", a.requireAuthHandler(apiMux))
@@ -209,18 +226,12 @@ func (a *App) render(w http.ResponseWriter, name string, data any) {
 	_, _ = rand.Read(nonceBytes)
 	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; font-src 'self' data: https://cdn.jsdelivr.net; style-src 'self' 'nonce-"+nonce+"' https://cdn.jsdelivr.net; script-src 'self' 'nonce-"+nonce+"' https://cdn.jsdelivr.net; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
-	t, err := template.New("").Funcs(template.FuncMap{
-		"bytes":         lib.FormatBytes,
-		"strategyLabel": lib.LoadBalancerStrategyLabel,
-		"certTime":      lib.FormatCertTime,
-		"certDuration":  lib.FormatCertDuration,
-		"add":           func(a, b int) int { return a + b },
-		"nonce":         func() string { return nonce },
-	}).ParseFS(templatesFS, "templates/*.tmpl")
+	t, err := parsedTemplates.Clone()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	t.Funcs(template.FuncMap{"nonce": func() string { return nonce }})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.ExecuteTemplate(w, name, data); err != nil {
 		log.Printf("render: %v", err)

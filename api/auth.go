@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
@@ -13,9 +14,12 @@ import (
 	"traefik-cloudflare-manager/models"
 )
 
+type authenticatedUserContextKey struct{}
+
 func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !a.authenticated(r) {
+		username := a.currentUsername(r)
+		if username == "" {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
@@ -23,13 +27,14 @@ func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "invalid CSRF token", http.StatusForbidden)
 			return
 		}
-		next(w, r)
+		next(w, r.WithContext(context.WithValue(r.Context(), authenticatedUserContextKey{}, username)))
 	}
 }
 
 func (a *App) requireAuthHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !a.authenticated(r) {
+		username := a.currentUsername(r)
+		if username == "" {
 			if wantsJSON(r) {
 				apiError(w, http.StatusUnauthorized, "authentication required")
 				return
@@ -41,21 +46,17 @@ func (a *App) requireAuthHandler(next http.Handler) http.Handler {
 			apiError(w, http.StatusForbidden, "invalid CSRF token")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authenticatedUserContextKey{}, username)))
 	})
 }
 
-func (a *App) authenticated(r *http.Request) bool {
-	return a.currentUsername(r) != ""
-}
-
 func (a *App) currentUsername(r *http.Request) string {
-	cfg := a.currentConfig()
-	if cfg == nil {
-		return ""
+	if username, ok := r.Context().Value(authenticatedUserContextKey{}).(string); ok {
+		return username
 	}
+	users := a.currentUsers()
 	if user, pass, ok := r.BasicAuth(); ok {
-		if userMatches(cfg, user, pass) {
+		if userMatchesUsers(users, user, pass) {
 			return user
 		}
 		return ""
@@ -81,7 +82,7 @@ func (a *App) currentUsername(r *http.Request) string {
 		return ""
 	}
 	sessionUser := sess.Username
-	for _, user := range lib.TraefikUsers(cfg) {
+	for _, user := range users {
 		if subtle.ConstantTimeCompare([]byte(sessionUser), []byte(user.Username)) == 1 {
 			return sessionUser
 		}
@@ -108,8 +109,26 @@ func (a *App) validCSRF(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(token)) == 1
 }
 
+func (a *App) currentUsers() []models.User {
+	if a.jsonStore != nil {
+		return a.jsonStore.Users()
+	}
+	cfg := a.currentConfig()
+	if cfg == nil {
+		return nil
+	}
+	return lib.TraefikUsers(cfg)
+}
+
 func userMatches(cfg *models.Config, username, password string) bool {
-	for _, user := range lib.TraefikUsers(cfg) {
+	if cfg == nil {
+		return false
+	}
+	return userMatchesUsers(lib.TraefikUsers(cfg), username, password)
+}
+
+func userMatchesUsers(users []models.User, username, password string) bool {
+	for _, user := range users {
 		if subtle.ConstantTimeCompare([]byte(username), []byte(user.Username)) == 1 &&
 			bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) == nil {
 			return true

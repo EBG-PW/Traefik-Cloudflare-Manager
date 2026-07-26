@@ -7,7 +7,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
+
+var logsUpgrader = websocket.Upgrader{}
 
 type traefikView struct {
 	Config      any
@@ -49,6 +53,38 @@ func (a *App) handleAPITraefikLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"logs": logs})
+}
+
+func (a *App) handleAPITraefikLogsWS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	tail, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("tail")))
+	if tail <= 0 || tail > 5000 {
+		tail = 500
+	}
+	conn, err := logsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				cancel()
+				return
+			}
+		}
+	}()
+	err = a.docker.StreamContainerLogs(ctx, "traefik", tail, func(stream, text string) error {
+		return conn.WriteJSON(map[string]string{"stream": stream, "text": text})
+	})
+	if err != nil && ctx.Err() == nil {
+		_ = conn.WriteJSON(map[string]string{"stream": "system", "error": err.Error()})
+	}
 }
 
 func (a *App) handleAPITraefikCommand(w http.ResponseWriter, r *http.Request) {

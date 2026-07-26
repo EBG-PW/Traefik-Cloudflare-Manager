@@ -20,6 +20,9 @@ type pageView struct {
 type dashboardView struct {
 	Config       *models.Config
 	Stats        models.DockerStats
+	Traefik      models.TraefikVersionInfo
+	StatsPending bool
+	Zones        []string
 	Message      string
 	Error        string
 	LocalWarning bool

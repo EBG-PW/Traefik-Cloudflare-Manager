@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/container.yml"
       - "Dockerfile"
+      - "docker-compose.yml"
       - "go.mod"
       - "go.sum"
       - "api/**"
@@ -20,6 +21,7 @@ on:
     paths:
       - ".github/workflows/container.yml"
       - "Dockerfile"
+      - "docker-compose.yml"
       - "go.mod"
       - "go.sum"
       - "api/**"

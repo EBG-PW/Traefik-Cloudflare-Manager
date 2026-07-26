@@ -73,3 +73,19 @@ func TestExpiredSessionIsRejected(t *testing.T) {
 		t.Fatalf("expired session returned user %q", got)
 	}
 }
+
+func TestForwardedHTTPSIsAcceptedOnlyFromPrivateProxy(t *testing.T) {
+	privateRequest := httptest.NewRequest(http.MethodGet, "http://manager/dashboard", nil)
+	privateRequest.RemoteAddr = "192.168.65.4:43210"
+	privateRequest.Header.Set("X-Forwarded-Proto", "https")
+	if !requestIsHTTPS(privateRequest) {
+		t.Fatal("HTTPS forwarded by a private Traefik address was not detected")
+	}
+
+	publicRequest := httptest.NewRequest(http.MethodGet, "http://manager/dashboard", nil)
+	publicRequest.RemoteAddr = "203.0.113.10:43210"
+	publicRequest.Header.Set("X-Forwarded-Proto", "https")
+	if requestIsHTTPS(publicRequest) {
+		t.Fatal("public client was allowed to spoof forwarded HTTPS")
+	}
+}

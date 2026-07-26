@@ -31,6 +31,7 @@
               <div class="card-header d-flex justify-content-between align-items-center">
                 <h2 class="card-title">Container logs</h2>
                 <div class="d-flex gap-2 align-items-center">
+                  <span class="badge bg-secondary-lt" id="log-stream-state">connecting</span>
                   <select class="form-select form-select-sm" id="log-tail" aria-label="Log lines">
                     <option value="200">200</option>
                     <option value="500" selected>500</option>
@@ -58,22 +59,66 @@
 const logsBox = document.getElementById('traefik-logs');
 const tailSelect = document.getElementById('log-tail');
 const refreshLogsButton = document.getElementById('refresh-logs');
+const streamState = document.getElementById('log-stream-state');
+let logsSocket = null;
+let reconnectTimer = null;
+let streamGeneration = 0;
 
-async function loadLogs() {
-  refreshLogsButton.disabled = true;
-  try {
-    const response = await fetch('/api/traefik/logs?tail=' + encodeURIComponent(tailSelect.value));
-    const data = await response.json();
-    logsBox.textContent = response.ok ? (data.logs || '') : (data.error || 'Could not load logs.');
-    logsBox.scrollTop = logsBox.scrollHeight;
-  } finally {
-    refreshLogsButton.disabled = false;
+function appendLogs(text) {
+  logsBox.textContent += text;
+  if (logsBox.textContent.length > 2_000_000) {
+    logsBox.textContent = logsBox.textContent.slice(-1_500_000);
   }
+  logsBox.scrollTop = logsBox.scrollHeight;
 }
 
-refreshLogsButton.addEventListener('click', loadLogs);
-tailSelect.addEventListener('change', loadLogs);
-loadLogs();
+function connectLogs() {
+  const generation = ++streamGeneration;
+  clearTimeout(reconnectTimer);
+  if (logsSocket) logsSocket.close();
+  logsBox.textContent = '';
+  streamState.textContent = 'connecting';
+  streamState.className = 'badge bg-blue-lt';
+  refreshLogsButton.disabled = true;
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  logsSocket = new WebSocket(`${scheme}://${location.host}/api/traefik/logs/ws?tail=${encodeURIComponent(tailSelect.value)}`);
+  logsSocket.onopen = () => {
+    if (generation !== streamGeneration) return;
+    streamState.textContent = 'live';
+    streamState.className = 'badge bg-green-lt';
+    refreshLogsButton.disabled = false;
+  };
+  logsSocket.onmessage = event => {
+    if (generation !== streamGeneration) return;
+    const data = JSON.parse(event.data);
+    if (data.error) {
+      appendLogs(`\n[stream error] ${data.error}\n`);
+      return;
+    }
+    appendLogs((data.text || '').replace(/\u001b\[[0-9;]*m/g, ''));
+  };
+  logsSocket.onerror = () => {
+    if (generation !== streamGeneration) return;
+    streamState.textContent = 'error';
+    streamState.className = 'badge bg-red-lt';
+  };
+  logsSocket.onclose = () => {
+    if (generation !== streamGeneration) return;
+    refreshLogsButton.disabled = false;
+    streamState.textContent = 'reconnecting';
+    streamState.className = 'badge bg-yellow-lt';
+    reconnectTimer = setTimeout(connectLogs, 2000);
+  };
+}
+
+refreshLogsButton.addEventListener('click', connectLogs);
+tailSelect.addEventListener('change', connectLogs);
+window.addEventListener('beforeunload', () => {
+  streamGeneration++;
+  clearTimeout(reconnectTimer);
+  if (logsSocket) logsSocket.close();
+});
+connectLogs();
 </script>
 </body>
 </html>

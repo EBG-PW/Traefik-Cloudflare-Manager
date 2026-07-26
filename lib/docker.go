@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -46,6 +47,65 @@ func (d *DockerClient) ContainerLogs(ctx context.Context, name string, tail int)
 		return stderr, nil
 	}
 	return stdout, nil
+}
+
+func (d *DockerClient) StreamContainerLogs(ctx context.Context, name string, tail int, consume func(stream, text string) error) error {
+	tailValue := strconv.Itoa(tail)
+	if tail <= 0 || tail > 5000 {
+		tailValue = "500"
+	}
+	path := fmt.Sprintf("/containers/%s/logs?stdout=1&stderr=1&follow=1&tail=%s&timestamps=1", url.PathEscape(name), url.QueryEscape(tailValue))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/"+DockerAPIVersion+path, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Transport: d.http.Transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("docker logs returned %s: %s", resp.Status, string(raw))
+	}
+	err = parseDockerLogStream(resp.Body, consume)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+func parseDockerLogStream(reader io.Reader, consume func(stream, text string) error) error {
+	header := make([]byte, 8)
+	for {
+		if _, err := io.ReadFull(reader, header); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return fmt.Errorf("truncated Docker log frame header")
+			}
+			return err
+		}
+		size := int(binary.BigEndian.Uint32(header[4:8]))
+		if size < 0 || size > 4<<20 {
+			return fmt.Errorf("invalid Docker log frame size %d", size)
+		}
+		payload := make([]byte, size)
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			return err
+		}
+		stream := "stdout"
+		if header[0] == 2 {
+			stream = "stderr"
+		} else if header[0] != 1 {
+			return fmt.Errorf("unsupported Docker log stream %d", header[0])
+		}
+		if err := consume(stream, string(payload)); err != nil {
+			return err
+		}
+	}
 }
 
 func (d *DockerClient) ExecContainer(ctx context.Context, name string, command []string) (models.ContainerCommandResult, error) {
@@ -119,6 +179,57 @@ func (d *DockerClient) ConnectNetwork(ctx context.Context, network, container st
 	return d.dockerJSON(ctx, http.MethodPost, "/networks/"+url.PathEscape(network)+"/connect", payload, nil, http.StatusOK)
 }
 
+func (d *DockerClient) EnsureSelfNetwork(ctx context.Context, network string, aliases ...string) error {
+	network = strings.TrimSpace(network)
+	if network == "" {
+		return errors.New("Docker network is required")
+	}
+	if err := d.EnsureNetwork(ctx, network); err != nil {
+		return err
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		return fmt.Errorf("resolve manager container ID: %w", err)
+	}
+	if hostname == "" {
+		return errors.New("resolve manager container ID: empty hostname")
+	}
+	var inspected struct {
+		NetworkSettings struct {
+			Networks map[string]struct {
+				Aliases []string `json:"Aliases"`
+			} `json:"Networks"`
+		} `json:"NetworkSettings"`
+	}
+	if err := d.dockerJSON(ctx, http.MethodGet, "/containers/"+url.PathEscape(hostname)+"/json", nil, &inspected, http.StatusOK); err != nil {
+		return err
+	}
+	endpoint, connected := inspected.NetworkSettings.Networks[network]
+	if connected && containsAll(endpoint.Aliases, aliases) {
+		return nil
+	}
+	if connected {
+		payload := map[string]any{"Container": hostname, "Force": true}
+		if err := d.dockerJSON(ctx, http.MethodPost, "/networks/"+url.PathEscape(network)+"/disconnect", payload, nil, http.StatusOK); err != nil {
+			return err
+		}
+	}
+	return d.ConnectNetwork(ctx, network, hostname, aliases...)
+}
+
+func containsAll(values, wanted []string) bool {
+	present := make(map[string]bool, len(values))
+	for _, value := range values {
+		present[value] = true
+	}
+	for _, value := range wanted {
+		if !present[value] {
+			return false
+		}
+	}
+	return true
+}
+
 func (d *DockerClient) PullImage(ctx context.Context, image string) error {
 	name, tag := splitImage(image)
 	path := "/images/create?fromImage=" + url.QueryEscape(name)
@@ -153,6 +264,14 @@ func (d *DockerClient) RemoveContainer(ctx context.Context, name string) error {
 }
 
 func (d *DockerClient) CreateTraefik(ctx context.Context, cfg *models.Config, store *models.Store) error {
+	acmeResolvers := strings.TrimSpace(store.ACMEDNSResolvers)
+	if acmeResolvers == "" {
+		acmeResolvers = "1.1.1.1:53,8.8.8.8:53"
+	}
+	acmeDelay := strings.TrimSpace(store.ACMEDNSDelay)
+	if acmeDelay == "" {
+		acmeDelay = "5s"
+	}
 	cmd := []string{
 		"--api.dashboard=true",
 		"--log.level=INFO",
@@ -164,6 +283,8 @@ func (d *DockerClient) CreateTraefik(ctx context.Context, cfg *models.Config, st
 		"--entrypoints.websecure.address=:443",
 		"--certificatesresolvers.cloudflare.acme.dnschallenge=true",
 		"--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare",
+		"--certificatesresolvers.cloudflare.acme.dnschallenge.resolvers=" + acmeResolvers,
+		"--certificatesresolvers.cloudflare.acme.dnschallenge.propagation.delaybeforechecks=" + acmeDelay,
 		"--certificatesresolvers.cloudflare.acme.email=" + cfg.AcmeEmail,
 		"--certificatesresolvers.cloudflare.acme.storage=/app/data/traefik/acme.json",
 	}
@@ -203,8 +324,12 @@ func (d *DockerClient) CreateTraefik(ctx context.Context, cfg *models.Config, st
 	}
 	payload := map[string]any{
 		"Image": store.TraefikImage,
-		"Env":   []string{"CF_DNS_API_TOKEN=" + cfg.CloudflareToken},
-		"Cmd":   cmd,
+		"Env": []string{
+			"CF_DNS_API_TOKEN=" + cfg.CloudflareToken,
+			"CF_ZONE_API_TOKEN=" + cfg.CloudflareToken,
+			"CLOUDFLARE_PROPAGATION_TIMEOUT=" + defaultString(store.ACMEDNSPropagationTTL, "300"),
+		},
+		"Cmd": cmd,
 		"ExposedPorts": map[string]any{
 			"80/tcp":  map[string]any{},
 			"443/tcp": map[string]any{},
@@ -218,6 +343,13 @@ func (d *DockerClient) CreateTraefik(ctx context.Context, cfg *models.Config, st
 		return err
 	}
 	return d.dockerJSON(ctx, http.MethodPost, "/containers/traefik/start", nil, nil, http.StatusNoContent)
+}
+
+func defaultString(value, fallback string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return fallback
 }
 
 type DataMount struct {
@@ -291,6 +423,81 @@ func (d *DockerClient) TraefikStats(ctx context.Context) models.DockerStats {
 		cpu = (cpuDelta / systemDelta) * online * 100
 	}
 	return models.DockerStats{Available: true, CPU: math.Round(cpu*10) / 10, Memory: raw.Memory.Usage, MemLimit: raw.Memory.Limit, NetRX: rx, NetTX: tx}
+}
+
+func (d *DockerClient) TraefikVersion(ctx context.Context, targetImage string) (models.TraefikVersionInfo, error) {
+	var container struct {
+		Image  string `json:"Image"`
+		Config struct {
+			Image string `json:"Image"`
+		} `json:"Config"`
+	}
+	if err := d.dockerJSON(ctx, http.MethodGet, "/containers/traefik/json", nil, &container, http.StatusOK); err != nil {
+		return models.TraefikVersionInfo{}, err
+	}
+	info := models.TraefikVersionInfo{
+		Image:     container.Config.Image,
+		CheckedAt: time.Now().UTC(),
+	}
+	running, err := d.inspectImage(ctx, container.Image)
+	if err != nil {
+		return info, err
+	}
+	info.Version = strings.TrimPrefix(strings.TrimSpace(running.Config.Labels["org.opencontainers.image.version"]), "v")
+
+	targetImage = strings.TrimSpace(targetImage)
+	if targetImage == "" {
+		targetImage = container.Config.Image
+	}
+	tagged, taggedErr := d.inspectImage(ctx, targetImage)
+
+	var remote struct {
+		Descriptor struct {
+			Digest string `json:"digest"`
+		} `json:"Descriptor"`
+	}
+	path := "/distribution/" + url.PathEscape(targetImage) + "/json"
+	if err := d.dockerJSON(ctx, http.MethodGet, path, nil, &remote, http.StatusOK); err != nil {
+		info.CheckError = err.Error()
+		info.UpdateAvailable = imageUpdateAvailable(running.ID, tagged.ID, "", "")
+		return info, nil
+	}
+	taggedID := ""
+	if taggedErr == nil {
+		taggedID = tagged.ID
+	}
+	info.UpdateAvailable = imageUpdateAvailable(running.ID, taggedID, imageDigest(running.RepoDigests), remote.Descriptor.Digest)
+	return info, nil
+}
+
+type dockerImageInspect struct {
+	ID          string   `json:"Id"`
+	RepoDigests []string `json:"RepoDigests"`
+	Config      struct {
+		Labels map[string]string `json:"Labels"`
+	} `json:"Config"`
+}
+
+func (d *DockerClient) inspectImage(ctx context.Context, reference string) (dockerImageInspect, error) {
+	var inspected dockerImageInspect
+	err := d.dockerJSON(ctx, http.MethodGet, "/images/"+url.PathEscape(reference)+"/json", nil, &inspected, http.StatusOK)
+	return inspected, err
+}
+
+func imageDigest(repoDigests []string) string {
+	for _, value := range repoDigests {
+		if separator := strings.LastIndex(value, "@"); separator >= 0 && separator+1 < len(value) {
+			return value[separator+1:]
+		}
+	}
+	return ""
+}
+
+func imageUpdateAvailable(runningID, taggedID, localDigest, remoteDigest string) bool {
+	if taggedID != "" && runningID != taggedID {
+		return true
+	}
+	return localDigest != "" && remoteDigest != "" && localDigest != remoteDigest
 }
 
 func (d *DockerClient) dockerJSON(ctx context.Context, method, path string, body any, out any, okStatuses ...int) error {

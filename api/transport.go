@@ -33,11 +33,20 @@ func requestIsHTTPS(r *http.Request) bool {
 		return true
 	}
 	// Forwarded headers are accepted only from the private Docker/LAN side.
-	return trustedProxyRemote(r) && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+	return privateRemote(r) && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
 }
 
 func privateClient(r *http.Request) bool {
 	ip := net.ParseIP(clientIP(r))
+	if ip == nil {
+		return false
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	return ok && (addr.Unmap().IsPrivate() || addr.IsLoopback())
+}
+
+func privateRemote(r *http.Request) bool {
+	ip := net.ParseIP(remoteIP(r))
 	if ip == nil {
 		return false
 	}

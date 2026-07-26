@@ -45,6 +45,33 @@ func NormalizeConfig(cfg *models.Config) {
 	}
 }
 
+func cloneConfig(cfg *models.Config) *models.Config {
+	if cfg == nil {
+		return nil
+	}
+	copy := *cfg
+	copy.Users = append([]models.User(nil), cfg.Users...)
+	copy.Proxies = cloneProxies(cfg.Proxies)
+	return &copy
+}
+
+func cloneProxies(proxies []models.ProxyConfig) []models.ProxyConfig {
+	if proxies == nil {
+		return nil
+	}
+	copy := make([]models.ProxyConfig, len(proxies))
+	for i := range proxies {
+		copy[i] = cloneProxy(proxies[i])
+	}
+	return copy
+}
+
+func cloneProxy(proxy models.ProxyConfig) models.ProxyConfig {
+	proxy.Backends = append([]models.Backend(nil), proxy.Backends...)
+	proxy.Locations = append([]models.Location(nil), proxy.Locations...)
+	return proxy
+}
+
 // JSONStore keeps global configuration and independently writable proxy files.
 // It is intentionally a single-process store.
 type JSONStore struct {
@@ -53,6 +80,8 @@ type JSONStore struct {
 	configMu   sync.Mutex
 	locksMu    sync.Mutex
 	proxyLocks map[string]*sync.Mutex
+	cache      *models.Config
+	cacheReady bool
 }
 
 func OpenJSONStore(base *models.Store) (*JSONStore, error) {
@@ -63,7 +92,16 @@ func OpenJSONStore(base *models.Store) (*JSONStore, error) {
 	if err := s.migrateLegacyProxies(); err != nil {
 		return nil, err
 	}
-	if _, err := s.LoadConfig(); err != nil {
+	s.dataMu.Lock()
+	s.configMu.Lock()
+	cfg, err := s.loadSnapshotUnlocked()
+	s.configMu.Unlock()
+	if err == nil {
+		s.cache = cloneConfig(cfg)
+		s.cacheReady = true
+	}
+	s.dataMu.Unlock()
+	if err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -72,8 +110,13 @@ func OpenJSONStore(base *models.Store) (*JSONStore, error) {
 func (s *JSONStore) LoadConfig() (*models.Config, error) {
 	s.dataMu.RLock()
 	defer s.dataMu.RUnlock()
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
+	if !s.cacheReady {
+		return nil, errors.New("configuration cache is not initialized")
+	}
+	return cloneConfig(s.cache), nil
+}
+
+func (s *JSONStore) loadSnapshotUnlocked() (*models.Config, error) {
 	cfg, err := loadGlobalConfig(s.base)
 	if err != nil || cfg == nil {
 		return cfg, err
@@ -94,24 +137,20 @@ func (s *JSONStore) UpdateConfig(update func(*models.Config) error) (*models.Con
 	defer s.dataMu.Unlock()
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
-	cfg, err := loadGlobalConfig(s.base)
-	if err != nil {
-		return nil, err
-	}
+	cfg := cloneConfig(s.cache)
 	if cfg == nil {
 		return nil, errors.New("configuration is not initialized")
 	}
-	cfg.Proxies, err = s.listProxiesUnlocked()
-	if err != nil {
-		return nil, err
-	}
+	proxies := cloneProxies(cfg.Proxies)
 	if err := update(cfg); err != nil {
 		return nil, err
 	}
+	cfg.Proxies = proxies
 	if err := saveGlobalConfig(s.base, cfg); err != nil {
 		return nil, err
 	}
-	return cfg, nil
+	s.cache = cloneConfig(cfg)
+	return cloneConfig(cfg), nil
 }
 
 func (s *JSONStore) SaveInitialConfig(cfg *models.Config) error {
@@ -122,22 +161,39 @@ func (s *JSONStore) SaveInitialConfig(cfg *models.Config) error {
 	if err := saveGlobalConfig(s.base, cfg); err != nil {
 		return err
 	}
-	for _, proxy := range cfg.Proxies {
-		proxy.SchemaVersion = proxySchemaVersion
-		if proxy.Revision == 0 {
-			proxy.Revision = 1
+	for i := range cfg.Proxies {
+		cfg.Proxies[i].SchemaVersion = proxySchemaVersion
+		if cfg.Proxies[i].Revision == 0 {
+			cfg.Proxies[i].Revision = 1
 		}
-		if err := writeProxyFile(s.proxyPath(proxy.Host), proxy); err != nil {
+		if err := writeProxyFile(s.proxyPath(cfg.Proxies[i].Host), cfg.Proxies[i]); err != nil {
 			return err
 		}
 	}
+	s.cache = cloneConfig(cfg)
+	s.cacheReady = true
 	return nil
 }
 
 func (s *JSONStore) ListProxies() ([]models.ProxyConfig, error) {
 	s.dataMu.RLock()
 	defer s.dataMu.RUnlock()
-	return s.listProxiesUnlocked()
+	if !s.cacheReady {
+		return nil, errors.New("configuration cache is not initialized")
+	}
+	if s.cache == nil {
+		return []models.ProxyConfig{}, nil
+	}
+	return cloneProxies(s.cache.Proxies), nil
+}
+
+func (s *JSONStore) Users() []models.User {
+	s.dataMu.RLock()
+	defer s.dataMu.RUnlock()
+	if s.cache == nil {
+		return nil
+	}
+	return append([]models.User(nil), s.cache.Users...)
 }
 
 func (s *JSONStore) listProxiesUnlocked() ([]models.ProxyConfig, error) {
@@ -170,28 +226,33 @@ func (s *JSONStore) listProxiesUnlocked() ([]models.ProxyConfig, error) {
 func (s *JSONStore) GetProxy(host string) (models.ProxyConfig, error) {
 	s.dataMu.RLock()
 	defer s.dataMu.RUnlock()
-	lock := s.proxyLock(host)
-	lock.Lock()
-	defer lock.Unlock()
-	return s.getProxyUnlocked(host)
+	return s.getCachedProxyUnlocked(host)
 }
 
-func (s *JSONStore) getProxyUnlocked(host string) (models.ProxyConfig, error) {
-	path, err := s.findProxyPath(host)
-	if err != nil {
-		return models.ProxyConfig{}, err
+func (s *JSONStore) getCachedProxyUnlocked(host string) (models.ProxyConfig, error) {
+	if !s.cacheReady || s.cache == nil {
+		return models.ProxyConfig{}, os.ErrNotExist
 	}
-	return readProxyFile(path)
+	host = CleanHost(host)
+	for _, proxy := range s.cache.Proxies {
+		if proxy.Host == host {
+			return cloneProxy(proxy), nil
+		}
+	}
+	return models.ProxyConfig{}, os.ErrNotExist
 }
 
 func (s *JSONStore) CreateProxy(proxy models.ProxyConfig) (models.ProxyConfig, error) {
 	s.dataMu.Lock()
 	defer s.dataMu.Unlock()
+	if s.cache == nil {
+		return models.ProxyConfig{}, errors.New("configuration is not initialized")
+	}
 	host := CleanHost(proxy.Host)
 	lock := s.proxyLock(host)
 	lock.Lock()
 	defer lock.Unlock()
-	if _, err := s.findProxyPath(host); err == nil {
+	if _, err := s.getCachedProxyUnlocked(host); err == nil {
 		return models.ProxyConfig{}, fmt.Errorf("proxy %s already exists", host)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return models.ProxyConfig{}, err
@@ -202,7 +263,9 @@ func (s *JSONStore) CreateProxy(proxy models.ProxyConfig) (models.ProxyConfig, e
 	if err := writeProxyFile(s.proxyPath(host), proxy); err != nil {
 		return models.ProxyConfig{}, err
 	}
-	return proxy, nil
+	s.cache.Proxies = append(s.cache.Proxies, cloneProxy(proxy))
+	sort.Slice(s.cache.Proxies, func(i, j int) bool { return s.cache.Proxies[i].Host < s.cache.Proxies[j].Host })
+	return cloneProxy(proxy), nil
 }
 
 func (s *JSONStore) ReplaceProxy(oldHost string, proxy models.ProxyConfig) (models.ProxyConfig, error) {
@@ -211,12 +274,12 @@ func (s *JSONStore) ReplaceProxy(oldHost string, proxy models.ProxyConfig) (mode
 	oldHost, newHost := CleanHost(oldHost), CleanHost(proxy.Host)
 	unlock := s.lockHosts(oldHost, newHost)
 	defer unlock()
-	current, err := s.getProxyUnlocked(oldHost)
+	current, err := s.getCachedProxyUnlocked(oldHost)
 	if err != nil {
 		return models.ProxyConfig{}, err
 	}
 	if oldHost != newHost {
-		if _, err := s.findProxyPath(newHost); err == nil {
+		if _, err := s.getCachedProxyUnlocked(newHost); err == nil {
 			return models.ProxyConfig{}, fmt.Errorf("proxy %s already exists", newHost)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return models.ProxyConfig{}, err
@@ -235,7 +298,8 @@ func (s *JSONStore) ReplaceProxy(oldHost string, proxy models.ProxyConfig) (mode
 			}
 		}
 	}
-	return proxy, nil
+	s.replaceCachedProxyUnlocked(oldHost, proxy)
+	return cloneProxy(proxy), nil
 }
 
 func (s *JSONStore) UpdateProxy(host string, update func(*models.ProxyConfig) error) (models.ProxyConfig, error) {
@@ -245,7 +309,7 @@ func (s *JSONStore) UpdateProxy(host string, update func(*models.ProxyConfig) er
 	lock := s.proxyLock(host)
 	lock.Lock()
 	defer lock.Unlock()
-	proxy, err := s.getProxyUnlocked(host)
+	proxy, err := s.getCachedProxyUnlocked(host)
 	if err != nil {
 		return models.ProxyConfig{}, err
 	}
@@ -260,7 +324,8 @@ func (s *JSONStore) UpdateProxy(host string, update func(*models.ProxyConfig) er
 	if err := writeProxyFile(s.proxyPath(host), proxy); err != nil {
 		return models.ProxyConfig{}, err
 	}
-	return proxy, nil
+	s.replaceCachedProxyUnlocked(host, proxy)
+	return cloneProxy(proxy), nil
 }
 
 func (s *JSONStore) DeleteProxy(host string) error {
@@ -274,7 +339,31 @@ func (s *JSONStore) DeleteProxy(host string) error {
 	if err != nil {
 		return err
 	}
-	return os.Remove(path)
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	if s.cache != nil {
+		for i := range s.cache.Proxies {
+			if s.cache.Proxies[i].Host == host {
+				s.cache.Proxies = append(s.cache.Proxies[:i], s.cache.Proxies[i+1:]...)
+				break
+			}
+		}
+	}
+	return nil
+}
+
+func (s *JSONStore) replaceCachedProxyUnlocked(oldHost string, proxy models.ProxyConfig) {
+	if s.cache == nil {
+		return
+	}
+	for i := range s.cache.Proxies {
+		if s.cache.Proxies[i].Host == oldHost {
+			s.cache.Proxies[i] = cloneProxy(proxy)
+			sort.Slice(s.cache.Proxies, func(i, j int) bool { return s.cache.Proxies[i].Host < s.cache.Proxies[j].Host })
+			return
+		}
+	}
 }
 
 func (s *JSONStore) proxyLock(host string) *sync.Mutex {

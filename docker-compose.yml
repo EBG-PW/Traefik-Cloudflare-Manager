@@ -1,16 +1,46 @@
 services:
+  data-init:
+    build: .
+    image: traefik-cloudflare-manager:local
+    user: "0:0"
+    command: ["init-data-permissions"]
+    restart: "no"
+    environment:
+      TCM_DATA_DIR: "/app/data"
+    volumes:
+      - manager-data:/app/data
+
   manager:
     build: .
     image: traefik-cloudflare-manager:local
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
     restart: unless-stopped
+    group_add:
+      - "${DOCKER_GID:-0}"
+    networks:
+      manager-network:
+        aliases:
+          - traefik-cloudflare-manager
+          - manager
     ports:
       - "${TCM_HTTP_PORT:-8080}:${TCM_CONTAINER_PORT:-8080}"
     environment:
       TCM_LISTEN_ADDR: ":${TCM_CONTAINER_PORT:-8080}"
+      TCM_DOCKER_NETWORK: "${TCM_DOCKER_NETWORK:-traefik-cloudflare-manager}"
+      TCM_TRAEFIK_IMAGE: "${TCM_TRAEFIK_IMAGE:-traefik:v3}"
       TCM_MANAGER_SERVICE_URL: "http://traefik-cloudflare-manager:${TCM_CONTAINER_PORT:-8080}"
+      TCM_ACME_DNS_RESOLVERS: "${TCM_ACME_DNS_RESOLVERS:-1.1.1.1:53,8.8.8.8:53}"
+      TCM_ACME_DNS_DELAY: "${TCM_ACME_DNS_DELAY:-5s}"
+      TCM_ACME_DNS_PROPAGATION_TIMEOUT: "${TCM_ACME_DNS_PROPAGATION_TIMEOUT:-300}"
     volumes:
       - manager-data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   manager-data:
+
+networks:
+  manager-network:
+    name: "${TCM_DOCKER_NETWORK:-traefik-cloudflare-manager}"

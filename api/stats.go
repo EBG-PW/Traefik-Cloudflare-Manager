@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"traefik-cloudflare-manager/lib"
+	"traefik-cloudflare-manager/models"
 )
 
 type statsSample struct {
@@ -20,34 +21,36 @@ type statsSample struct {
 }
 
 type statsPayload struct {
-	Available       bool          `json:"available"`
-	CPU             float64       `json:"cpu_percent"`
-	Memory          uint64        `json:"memory_bytes"`
-	MemLimit        uint64        `json:"memory_limit_bytes"`
-	NetRX           uint64        `json:"network_rx_bytes"`
-	NetTX           uint64        `json:"network_tx_bytes"`
-	NetRXRate       float64       `json:"network_rx_bytes_per_sec"`
-	NetTXRate       float64       `json:"network_tx_bytes_per_sec"`
-	MemoryHuman     string        `json:"memory_human"`
-	MemLimitHuman   string        `json:"memory_limit_human"`
-	NetRXHuman      string        `json:"network_rx_human"`
-	NetTXHuman      string        `json:"network_tx_human"`
-	NetRXRateHuman  string        `json:"network_rx_rate_human"`
-	NetTXRateHuman  string        `json:"network_tx_rate_human"`
-	Error           string        `json:"error,omitempty"`
-	History         []statsSample `json:"history"`
-	HistoryWindowMS int64         `json:"history_window_ms"`
+	Available       bool                      `json:"available"`
+	CPU             float64                   `json:"cpu_percent"`
+	Memory          uint64                    `json:"memory_bytes"`
+	MemLimit        uint64                    `json:"memory_limit_bytes"`
+	NetRX           uint64                    `json:"network_rx_bytes"`
+	NetTX           uint64                    `json:"network_tx_bytes"`
+	NetRXRate       float64                   `json:"network_rx_bytes_per_sec"`
+	NetTXRate       float64                   `json:"network_tx_bytes_per_sec"`
+	MemoryHuman     string                    `json:"memory_human"`
+	MemLimitHuman   string                    `json:"memory_limit_human"`
+	NetRXHuman      string                    `json:"network_rx_human"`
+	NetTXHuman      string                    `json:"network_tx_human"`
+	NetRXRateHuman  string                    `json:"network_rx_rate_human"`
+	NetTXRateHuman  string                    `json:"network_tx_rate_human"`
+	Error           string                    `json:"error,omitempty"`
+	History         []statsSample             `json:"history"`
+	HistoryWindowMS int64                     `json:"history_window_ms"`
+	Traefik         models.TraefikVersionInfo `json:"traefik"`
 }
 
 func (a *App) sampleStats(ctx context.Context) statsPayload {
 	stats := a.docker.TraefikStats(ctx)
+	version := a.traefikVersion()
 	now := time.Now().UTC()
 	a.statsMu.Lock()
 	defer a.statsMu.Unlock()
 
 	if !stats.Available {
 		a.statsHist = nil
-		return statsPayload{Available: false, Error: stats.Error, HistoryWindowMS: int64((60 * time.Second) / time.Millisecond)}
+		return statsPayload{Available: false, Error: stats.Error, HistoryWindowMS: int64((60 * time.Second) / time.Millisecond), Traefik: version}
 	}
 
 	sample := statsSample{
@@ -101,5 +104,48 @@ func (a *App) sampleStats(ctx context.Context) statsPayload {
 		NetTXRateHuman:  lib.FormatBytes(uint64(sample.TXRate)) + "/s",
 		History:         history,
 		HistoryWindowMS: int64((60 * time.Second) / time.Millisecond),
+		Traefik:         version,
 	}
+}
+
+func (a *App) traefikVersion() models.TraefikVersionInfo {
+	a.versionMu.Lock()
+	if !a.versionChecking && !time.Now().Before(a.versionNextCheck) {
+		a.versionChecking = true
+		generation := a.versionGeneration
+		go a.refreshTraefikVersion(generation)
+	}
+	info := a.versionInfo
+	a.versionMu.Unlock()
+	return info
+}
+
+func (a *App) refreshTraefikVersion(generation uint64) {
+	checkCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	info, err := a.docker.TraefikVersion(checkCtx, a.store.TraefikImage)
+	if err != nil {
+		info.CheckError = err.Error()
+	}
+	a.versionMu.Lock()
+	defer a.versionMu.Unlock()
+	if generation != a.versionGeneration {
+		return
+	}
+	a.versionInfo = info
+	a.versionChecking = false
+	if info.CheckError != "" {
+		a.versionNextCheck = time.Now().Add(time.Minute)
+	} else {
+		a.versionNextCheck = time.Now().Add(10 * time.Minute)
+	}
+}
+
+func (a *App) invalidateTraefikVersion() {
+	a.versionMu.Lock()
+	a.versionInfo = models.TraefikVersionInfo{}
+	a.versionNextCheck = time.Time{}
+	a.versionChecking = false
+	a.versionGeneration++
+	a.versionMu.Unlock()
 }

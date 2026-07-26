@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"net/url"
+	"sort"
+	"strings"
 
 	"traefik-cloudflare-manager/lib"
 	"traefik-cloudflare-manager/models"
@@ -10,20 +12,33 @@ import (
 
 func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	cfg := a.currentConfig()
-	stats := a.docker.TraefikStats(r.Context())
 	pageError := r.URL.Query().Get("err")
-	if _, err := a.jsonStore.LoadConfig(); err != nil {
-		pageError = "Proxy store is invalid. Traefik configuration will not be overwritten until this is fixed: " + err.Error()
-	}
 	a.render(w, "dashboard.tmpl", dashboardView{
 		Config:       cfg,
-		Stats:        stats,
+		StatsPending: true,
+		Zones:        proxyZones(cfg.Proxies),
 		Message:      r.URL.Query().Get("msg"),
 		Error:        pageError,
 		LocalWarning: cfg.Mode == "internal" || lib.IsPrivateIP(cfg.ServerIP),
 		InsecureHTTP: cfg.Mode == "internal" && !requestIsHTTPS(r),
 		CurrentUser:  a.currentUsername(r),
 	})
+}
+
+func proxyZones(proxies []models.ProxyConfig) []string {
+	seen := make(map[string]bool)
+	for _, proxy := range proxies {
+		zone := strings.TrimSpace(proxy.ZoneName)
+		if zone != "" {
+			seen[zone] = true
+		}
+	}
+	zones := make([]string, 0, len(seen))
+	for zone := range seen {
+		zones = append(zones, zone)
+	}
+	sort.Strings(zones)
+	return zones
 }
 
 func (a *App) handleRedeploy(w http.ResponseWriter, r *http.Request) {
@@ -66,9 +81,14 @@ func (a *App) redeploy(r *http.Request) error {
 		current.LastDeployError = ""
 		return nil
 	})
+	a.invalidateTraefikVersion()
 	return nil
 }
 
 func (a *App) stopTraefik(r *http.Request) error {
-	return a.docker.RemoveContainer(r.Context(), "traefik")
+	if err := a.docker.RemoveContainer(r.Context(), "traefik"); err != nil {
+		return err
+	}
+	a.invalidateTraefikVersion()
+	return nil
 }

@@ -7,7 +7,7 @@ const (
 	DefaultDockerSock  = "/var/run/docker.sock"
 	DefaultDockerNet   = "traefik-cloudflare-manager"
 	DefaultDockerVol   = ""
-	DefaultTraefik     = "traefik:v3.6"
+	DefaultTraefik     = "traefik:v3"
 	ConfigFileName     = "config.json"
 	ProxyDirectory     = "proxies"
 	TraefikConfigFile  = "dynamic.yml"

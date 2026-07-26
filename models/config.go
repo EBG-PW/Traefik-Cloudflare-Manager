@@ -10,6 +10,9 @@ type Store struct {
 	TraefikImage           string
 	TraefikNoNewPrivileges bool
 	ManagerServiceURL      string
+	ACMEDNSResolvers       string
+	ACMEDNSDelay           string
+	ACMEDNSPropagationTTL  string
 }
 
 type Config struct {
@@ -87,6 +90,14 @@ type DockerStats struct {
 	NetRX     uint64  `json:"network_rx_bytes"`
 	NetTX     uint64  `json:"network_tx_bytes"`
 	Error     string  `json:"error,omitempty"`
+}
+
+type TraefikVersionInfo struct {
+	Version         string    `json:"version,omitempty"`
+	Image           string    `json:"image,omitempty"`
+	UpdateAvailable bool      `json:"update_available"`
+	CheckError      string    `json:"check_error,omitempty"`
+	CheckedAt       time.Time `json:"checked_at,omitempty"`
 }
 
 type ContainerCommandResult struct {
