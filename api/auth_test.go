@@ -74,6 +74,21 @@ func TestExpiredSessionIsRejected(t *testing.T) {
 	}
 }
 
+func TestBasicAuthIsNotAcceptedAndDoesNotBypassCSRF(t *testing.T) {
+	app := &App{
+		cfg:      &models.Config{Users: []models.User{{Username: "admin", PasswordHash: "unused"}}},
+		sessions: make(map[[32]byte]session),
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://manager.example.com/api/proxies", nil)
+	request.SetBasicAuth("admin", "password")
+	if got := app.currentUsername(request); got != "" {
+		t.Fatalf("Basic Auth returned session user %q", got)
+	}
+	if app.validCSRF(request) {
+		t.Fatal("Basic Auth bypassed CSRF validation")
+	}
+}
+
 func TestForwardedHTTPSIsAcceptedOnlyFromPrivateProxy(t *testing.T) {
 	privateRequest := httptest.NewRequest(http.MethodGet, "http://manager/dashboard", nil)
 	privateRequest.RemoteAddr = "192.168.65.4:43210"

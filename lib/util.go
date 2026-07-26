@@ -93,6 +93,22 @@ func ValidHost(v string) bool {
 	return true
 }
 
+func ValidUsername(v string) bool {
+	if len(v) == 0 || len(v) > 64 {
+		return false
+	}
+	for i, r := range v {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		if i > 0 && (r == '.' || r == '_' || r == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func ValidIP(ip string) bool {
 	return net.ParseIP(ip) != nil
 }

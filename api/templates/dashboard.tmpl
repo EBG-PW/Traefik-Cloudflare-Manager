@@ -508,7 +508,10 @@ function targetSummary(proxy) {
   const locationSummary = locations.length
     ? `<div><span class="backend-summary" tabindex="0"><strong>${locations.length} locations</strong>${locationHover(locations)}</span></div>`
     : '';
-  if (backends.length === 1) return `${backends[0].protocol}://${backends[0].ip}:${backends[0].port}${locationSummary}`;
+  if (backends.length === 1) {
+    const target = `${backends[0].protocol}://${backends[0].ip}:${backends[0].port}`;
+    return `${escapeHTML(target)}${locationSummary}`;
+  }
   const sticky = proxy.sticky || proxy.strategy === 'sticky' ? ' + sticky sessions' : '';
   return `<span class="backend-summary" tabindex="0"><strong>${backends.length} backends</strong>${backendHover(backends)}</span><div class="text-secondary small">${strategyLabel(proxy.strategy)}${sticky}</div>${locationSummary}`;
 }
@@ -545,7 +548,7 @@ function upsertProxy(proxy) {
   row.innerHTML = `
     <td><a href="https://${encodeURI(proxy.host)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHTML(proxy.host)}</strong></a>${proxy.zone_name ? `<div class="text-secondary small">${escapeHTML(proxy.zone_name)}</div>` : ''}</td>
     <td>${targetSummary(proxy)}</td>
-    <td>${proxy.created_by || '-'}</td>
+    <td>${escapeHTML(proxy.created_by || '-')}</td>
     <td>${stateBadge(proxy)}${proxy.status_message ? `<div class="text-secondary small mt-1">${escapeHTML(proxy.status_message)}</div>` : ''}</td>
     <td>${cloudflareCell(proxy)}</td>
     <td>${actionButtons(proxy)}</td>`;

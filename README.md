@@ -47,7 +47,9 @@ Cloudflare proxying is blocked when the backend IP or Traefik server IP is priva
 
 ## REST API
 
-All `/api/*` routes require the same login credentials as the UI. Browser sessions and HTTP Basic Auth are both accepted.
+All `/api/*` routes require an authenticated manager browser session and a matching CSRF token for state-changing requests. HTTP Basic Auth is not accepted by the manager or REST API.
+
+The separate native Traefik dashboard host retains its own Basic Auth middleware; its authorization header is not forwarded through the manager route.
 
 - `GET /api/config`
 - `GET /api/proxies`

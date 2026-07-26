@@ -31,8 +31,8 @@ func WriteTraefikConfig(store *models.Store, cfg *models.Config) error {
 	var b strings.Builder
 	b.WriteString("http:\n")
 	b.WriteString("  routers:\n")
-	writeRouter(&b, "traefik-dashboard", cfg.TraefikHost, "api@internal", "dashboard-auth")
-	writeRouter(&b, "manager", cfg.ManagerHost, "manager-service", "dashboard-auth")
+	writeRouter(&b, "traefik-dashboard", cfg.TraefikHost, "api@internal", "traefik-dashboard-auth")
+	writeRouter(&b, "manager", cfg.ManagerHost, "manager-service", "")
 	for _, p := range cfg.Proxies {
 		if p.Paused || p.Status == "deleting" {
 			continue
@@ -43,7 +43,7 @@ func WriteTraefikConfig(store *models.Store, cfg *models.Config) error {
 		}
 	}
 	b.WriteString("  middlewares:\n")
-	b.WriteString("    dashboard-auth:\n")
+	b.WriteString("    traefik-dashboard-auth:\n")
 	b.WriteString("      basicAuth:\n")
 	b.WriteString("        users:\n")
 	for _, user := range TraefikUsers(cfg) {

@@ -65,7 +65,7 @@
                   </div>
                   <div class="col-md-6">
                     <label class="form-label">Traefik username</label>
-                    <input class="form-control" name="username" autocomplete="username" required>
+                    <input class="form-control" name="username" autocomplete="username" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" title="Use letters and numbers; dots, underscores and hyphens are allowed after the first character." required>
                   </div>
                   <div class="col-md-6">
                     <label class="form-label">Traefik password</label>

@@ -113,8 +113,8 @@ func (a *App) handleAPIUserByName(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) addUser(input userInput) error {
 	username := strings.TrimSpace(input.Username)
-	if username == "" || strings.Contains(username, ":") {
-		return errString("Username is required and cannot contain ':'.")
+	if !lib.ValidUsername(username) {
+		return errString("Username must be 1-64 letters or numbers, with '.', '_' or '-' allowed after the first character.")
 	}
 	if len(input.Password) < 12 {
 		return errString("Password must be at least 12 characters.")

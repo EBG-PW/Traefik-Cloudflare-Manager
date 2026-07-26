@@ -101,6 +101,27 @@ func TestDashboardInlineJavaScriptSyntax(t *testing.T) {
 	}
 }
 
+func TestDashboardEscapesDynamicHTMLValues(t *testing.T) {
+	app := &App{}
+	recorder := httptest.NewRecorder()
+	app.render(recorder, "dashboard.tmpl", dashboardView{
+		Config: &models.Config{
+			Mode:        "internal",
+			TraefikHost: "iproxy.example.com",
+			ManagerHost: "iproxym.example.com",
+		},
+	})
+	script := recorder.Body.String()
+	for _, expected := range []string{
+		"escapeHTML(proxy.created_by || '-')",
+		"return `${escapeHTML(target)}${locationSummary}`",
+	} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("dashboard does not safely render dynamic value: %s", expected)
+		}
+	}
+}
+
 func TestDashboardInitialRenderDoesNotCallDocker(t *testing.T) {
 	app := &App{
 		cfg: &models.Config{

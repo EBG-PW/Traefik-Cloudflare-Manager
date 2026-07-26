@@ -35,7 +35,7 @@
                 <form method="post" action="/users">
                   <div class="mb-3">
                     <label class="form-label">Username</label>
-                    <input class="form-control" name="username" autocomplete="username" required>
+                    <input class="form-control" name="username" autocomplete="username" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" title="Use letters and numbers; dots, underscores and hyphens are allowed after the first character." required>
                   </div>
                   <div class="mb-3">
                     <label class="form-label">Password</label>

@@ -15,3 +15,18 @@ func TestManagerServiceURLUsesListenPort(t *testing.T) {
 		}
 	}
 }
+
+func TestValidUsername(t *testing.T) {
+	valid := []string{"admin", "Admin-2", "first.last", "user_name"}
+	for _, username := range valid {
+		if !ValidUsername(username) {
+			t.Errorf("ValidUsername(%q) rejected a valid username", username)
+		}
+	}
+	invalid := []string{"", "-admin", ".admin", "user:name", "user name", "<img>", "ユーザー"}
+	for _, username := range invalid {
+		if ValidUsername(username) {
+			t.Errorf("ValidUsername(%q) accepted an invalid username", username)
+		}
+	}
+}

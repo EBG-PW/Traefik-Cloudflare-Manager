@@ -55,6 +55,9 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 	if cfg != nil {
+		if err := lib.WriteTraefikConfig(store, cfg); err != nil {
+			log.Fatalf("refresh Traefik config: %v", err)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		err := lib.NewDockerClient(store.DockerSocket).EnsureSelfNetwork(ctx, store.DockerNetwork, "traefik-cloudflare-manager", "manager")
 		cancel()
@@ -63,9 +66,19 @@ func main() {
 		}
 	}
 	app := api.NewAppWithJSONStore(store, jsonStore, cfg)
-	handler := middleware.SecurityHeaders(middleware.LimitBody(app.Routes()))
+	handler := middleware.SecurityHeaders(middleware.LimitBodyReadTime(middleware.LimitBody(app.Routes())))
 	log.Printf("%s listening on %s", lib.AppName, addr)
-	log.Fatal(http.ListenAndServe(addr, handler))
+	log.Fatal(newHTTPServer(addr, handler).ListenAndServe())
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 }
 
 func initializeDataPermissions(dataDir string) error {

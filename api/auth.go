@@ -55,12 +55,6 @@ func (a *App) currentUsername(r *http.Request) string {
 		return username
 	}
 	users := a.currentUsers()
-	if user, pass, ok := r.BasicAuth(); ok {
-		if userMatchesUsers(users, user, pass) {
-			return user
-		}
-		return ""
-	}
 	c, err := r.Cookie(sessionCookie)
 	if err != nil {
 		return ""
@@ -92,9 +86,6 @@ func (a *App) currentUsername(r *http.Request) string {
 
 func (a *App) validCSRF(r *http.Request) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
-		return true
-	}
-	if _, _, ok := r.BasicAuth(); ok {
 		return true
 	}
 	cookie, err := r.Cookie(csrfCookie)

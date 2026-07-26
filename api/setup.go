@@ -133,8 +133,8 @@ func validateSetup(cfg *models.Config, password string) error {
 		return errors.New("Domain is not valid")
 	case !lib.ValidIP(cfg.ServerIP):
 		return errors.New("Server IP must be an IPv4 or IPv6 address")
-	case cfg.Username == "" || strings.Contains(cfg.Username, ":"):
-		return errors.New("Traefik username is required and cannot contain ':'")
+	case !lib.ValidUsername(cfg.Username):
+		return errors.New("Username must be 1-64 letters or numbers, with '.', '_' or '-' allowed after the first character")
 	case len(password) < 12:
 		return errors.New("Password must be at least 12 characters")
 	case !lib.ValidHost(cfg.TraefikHost) || !strings.HasSuffix(cfg.TraefikHost, "."+cfg.Domain):
