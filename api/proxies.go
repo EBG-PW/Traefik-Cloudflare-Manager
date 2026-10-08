@@ -28,6 +28,12 @@ type proxyInput struct {
 	CloudflareProxy bool              `json:"cloudflare_proxy"`
 }
 
+const (
+	proxyDNSCheckInterval         = time.Hour
+	proxyDNSRetryInterval         = 15 * time.Minute
+	proxyCertificateCheckInterval = 6 * time.Hour
+)
+
 func (a *App) handleProxyCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -294,10 +300,12 @@ func (a *App) provisionProxy(ctx context.Context, host string) error {
 	recordID, err := lib.NewCloudflareClient(cfg.CloudflareToken).EnsureCNAMERecord(ctx, zoneID, proxy.Host, cfg.TraefikHost, proxy.CloudflareProxy)
 	if err != nil {
 		a.markProxyError(host, "Cloudflare DNS update failed: "+err.Error(), 2*time.Minute)
+		a.scheduleNextDNSCheck(host, proxyDNSRetryInterval)
 		return errString("Cloudflare DNS update failed: " + err.Error())
 	}
 	_, err = a.jsonStore.UpdateProxy(host, func(current *models.ProxyConfig) error {
 		current.CloudflareRecord = recordID
+		current.NextDNSCheck = time.Now().UTC().Add(proxyDNSCheckInterval)
 		current.Status = "waiting_certificate"
 		current.StatusMessage = "DNS and Traefik configuration are ready. Waiting for certificate."
 		current.UpdatedAt = time.Now().UTC()
@@ -324,6 +332,15 @@ func (a *App) markProxyError(host, message string, retry time.Duration) {
 		proxy.NextRetry = proxy.LastChecked.Add(retry)
 		return nil
 	})
+}
+
+func (a *App) scheduleNextDNSCheck(host string, delay time.Duration) {
+	if _, err := a.jsonStore.UpdateProxy(host, func(proxy *models.ProxyConfig) error {
+		proxy.NextDNSCheck = time.Now().UTC().Add(delay)
+		return nil
+	}); err != nil {
+		log.Printf("schedule DNS check failed host=%s: %v", host, err)
+	}
 }
 
 func normalizeBackends(input proxyInput) ([]models.Backend, error) {
@@ -529,24 +546,45 @@ func (a *App) reconcileProxiesOnce(ctx context.Context) {
 			}
 			continue
 		}
-		zoneID := proxy.ZoneID
-		if zoneID == "" {
-			zoneID = cfg.ZoneID
-		}
-		recordID, err := cf.EnsureCNAMERecord(ctx, zoneID, proxy.Host, cfg.TraefikHost, proxy.CloudflareProxy)
-		if err != nil {
-			a.markProxyError(proxy.Host, "Cloudflare DNS check failed: "+err.Error(), 2*time.Minute)
-			log.Printf("proxy reconcile cloudflare failed host=%s: %v", proxy.Host, err)
-			continue
-		}
-		if recordID != "" && recordID != proxy.CloudflareRecord {
-			_, _ = a.jsonStore.UpdateProxy(proxy.Host, func(current *models.ProxyConfig) error {
+		// DNS has its own persisted schedule so TLS failures and restarts do
+		// not cause repeated API calls.
+		if !proxy.NextDNSCheck.After(now) {
+			zoneID := proxy.ZoneID
+			if zoneID == "" {
+				zoneID = cfg.ZoneID
+			}
+			recordID, err := cf.EnsureCNAMERecord(ctx, zoneID, proxy.Host, cfg.TraefikHost, proxy.CloudflareProxy)
+			if err != nil {
+				a.markProxyError(proxy.Host, "Cloudflare DNS check failed: "+err.Error(), 2*time.Minute)
+				a.scheduleNextDNSCheck(proxy.Host, proxyDNSRetryInterval)
+				log.Printf("proxy reconcile cloudflare failed host=%s: %v", proxy.Host, err)
+				continue
+			}
+			if _, err := a.jsonStore.UpdateProxy(proxy.Host, func(current *models.ProxyConfig) error {
 				current.CloudflareRecord = recordID
+				current.NextDNSCheck = time.Now().UTC().Add(proxyDNSCheckInterval)
 				current.UpdatedAt = now
 				return nil
-			})
+			}); err != nil {
+				log.Printf("proxy reconcile DNS state failed host=%s: %v", proxy.Host, err)
+			}
 		}
 		if proxy.Paused {
+			continue
+		}
+		if !proxyCertificateCheckDue(proxy, now) {
+			// Warning thresholds use saved certificate dates without a TLS probe.
+			if proxy.SSLReady {
+				status, message := certificateStatus(proxy.CertNotAfter, now)
+				if proxy.Status != status || proxy.StatusMessage != message {
+					_, _ = a.jsonStore.UpdateProxy(proxy.Host, func(current *models.ProxyConfig) error {
+						current.Status = status
+						current.StatusMessage = message
+						current.UpdatedAt = now
+						return nil
+					})
+				}
+			}
 			continue
 		}
 
@@ -587,6 +625,15 @@ func (a *App) reconcileProxiesOnce(ctx context.Context) {
 	if err := a.writeCurrentTraefikConfig(); err != nil {
 		log.Printf("proxy reconcile render failed: %v", err)
 	}
+}
+
+func proxyCertificateCheckDue(proxy models.ProxyConfig, now time.Time) bool {
+	if !proxy.SSLReady {
+		return !proxy.NextRetry.After(now)
+	}
+	// Recheck at expiry even if the normal six-hour interval has not elapsed:
+	// Traefik may already be serving a renewed certificate.
+	return !proxy.CertNotAfter.After(now) || !proxy.LastChecked.Add(proxyCertificateCheckInterval).After(now)
 }
 
 func certificateStatus(notAfter, now time.Time) (string, string) {

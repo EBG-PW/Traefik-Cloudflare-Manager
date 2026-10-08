@@ -57,6 +57,7 @@ type cfDNSRecord struct {
 	Name    string `json:"name"`
 	Content string `json:"content"`
 	Proxied bool   `json:"proxied"`
+	TTL     int    `json:"ttl"`
 }
 
 func NewCloudflareClient(token string) *CloudflareClient {
@@ -89,7 +90,11 @@ func (c *CloudflareClient) EnsureARecord(ctx context.Context, zoneID, name, ip s
 	payload := map[string]any{"type": "A", "name": name, "content": ip, "ttl": 1, "proxied": proxied}
 	var out cfResponse[cfDNSRecord]
 	if len(list.Result) > 0 {
-		id := list.Result[0].ID
+		record := list.Result[0]
+		id := record.ID
+		if record.Content == ip && record.Proxied == proxied && record.TTL == 1 {
+			return id, nil
+		}
 		err := c.do(ctx, http.MethodPut, fmt.Sprintf("/zones/%s/dns_records/%s", url.PathEscape(zoneID), url.PathEscape(id)), payload, &out)
 		return id, err
 	}
@@ -107,9 +112,11 @@ func (c *CloudflareClient) EnsureCNAMERecord(ctx context.Context, zoneID, name, 
 	}
 
 	cnameID := ""
+	var cname cfDNSRecord
 	for _, record := range list.Result {
 		if strings.EqualFold(record.Type, "CNAME") && cnameID == "" {
 			cnameID = record.ID
+			cname = record
 			continue
 		}
 		return "", fmt.Errorf("DNS name %s already has an incompatible %s record; remove or rename it first", name, record.Type)
@@ -118,6 +125,9 @@ func (c *CloudflareClient) EnsureCNAMERecord(ctx context.Context, zoneID, name, 
 	payload := map[string]any{"type": "CNAME", "name": name, "content": target, "ttl": 1, "proxied": proxied}
 	var out cfResponse[cfDNSRecord]
 	if cnameID != "" {
+		if strings.EqualFold(strings.TrimSuffix(cname.Content, "."), strings.TrimSuffix(target, ".")) && cname.Proxied == proxied && cname.TTL == 1 {
+			return cnameID, nil
+		}
 		err := c.do(ctx, http.MethodPut, fmt.Sprintf("/zones/%s/dns_records/%s", url.PathEscape(zoneID), url.PathEscape(cnameID)), payload, &out)
 		return cnameID, err
 	}

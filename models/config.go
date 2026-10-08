@@ -56,6 +56,7 @@ type ProxyConfig struct {
 	CertNotAfter     time.Time  `json:"cert_not_after,omitempty"`
 	CertIssuer       string     `json:"cert_issuer,omitempty"`
 	NextRetry        time.Time  `json:"next_retry,omitempty"`
+	NextDNSCheck     time.Time  `json:"next_dns_check,omitempty"`
 	CreatedBy        string     `json:"created_by,omitempty"`
 	LastChecked      time.Time  `json:"last_checked,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`
