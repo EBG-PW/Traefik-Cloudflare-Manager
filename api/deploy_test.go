@@ -12,10 +12,76 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"traefik-cloudflare-manager/lib"
 	"traefik-cloudflare-manager/models"
 )
+
+func TestRedeployRunsInBackground(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	socket := testDockerSocket(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_ping" {
+			close(entered)
+			<-release
+		}
+		http.Error(w, "test Docker unavailable", http.StatusServiceUnavailable)
+	}))
+	store := &models.Store{DataDir: t.TempDir()}
+	jsonStore, err := lib.OpenJSONStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jsonStore.SaveInitialConfig(&models.Config{Domain: "example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{store: store, jsonStore: jsonStore, docker: lib.NewDockerClient(socket)}
+	ctx, cancel := context.WithCancel(context.Background())
+	recorder := httptest.NewRecorder()
+	app.handleAPIRedeploy(recorder, httptest.NewRequest(http.MethodPost, "/api/traefik/redeploy", nil).WithContext(ctx))
+	cancel()
+	if recorder.Code != http.StatusAccepted || !recorder.Flushed {
+		t.Fatalf("start response = %d, flushed = %v", recorder.Code, recorder.Flushed)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background deployment did not start")
+	}
+	firstJob := app.deployJob
+	duplicate := httptest.NewRecorder()
+	app.handleAPIRedeploy(duplicate, httptest.NewRequest(http.MethodPost, "/api/traefik/redeploy", nil))
+	if duplicate.Code != http.StatusAccepted || app.deployJob != firstJob {
+		t.Fatal("duplicate POST started another deployment")
+	}
+	status := httptest.NewRecorder()
+	app.handleAPIRedeploy(status, httptest.NewRequest(http.MethodGet, "/api/traefik/redeploy", nil))
+	var job deployJob
+	if err := json.Unmarshal(status.Body.Bytes(), &job); err != nil || job.State != "running" {
+		t.Fatalf("status while Docker blocked = %s, error %v", status.Body.String(), err)
+	}
+	unblock()
+	deadline := time.Now().Add(2 * time.Second)
+	for app.deployStatus().State == "running" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if job := app.deployStatus(); job.State != "error" || !strings.Contains(job.Message, "docker ping") {
+		t.Fatalf("background result = %+v", job)
+	}
+}
+
+func TestRedeployNavigationReturnsToDashboard(t *testing.T) {
+	app := &App{}
+	w := httptest.NewRecorder()
+	app.handleRedeploy(w, httptest.NewRequest(http.MethodGet, "/traefik/redeploy", nil))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("GET redeploy = %d, location %q", w.Code, w.Header().Get("Location"))
+	}
+}
 
 func TestRedeployLifecycle(t *testing.T) {
 	for _, test := range []struct {
@@ -106,7 +172,7 @@ func TestRedeployLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			app := &App{store: store, jsonStore: jsonStore, docker: lib.NewDockerClient(socket)}
-			err = app.redeploy(httptest.NewRequest(http.MethodPost, "/traefik/redeploy", nil).WithContext(ctx))
+			err = app.redeploy(ctx)
 			if test.wantError == "" && err != nil {
 				t.Fatalf("redeploy after disconnect: %v", err)
 			}

@@ -44,15 +44,20 @@ func proxyZones(proxies []models.ProxyConfig) []string {
 }
 
 func (a *App) handleRedeploy(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := a.redeploy(r); err != nil {
-		redirectErr(w, r, "Deploy failed: "+err.Error())
-		return
+	job, started := a.reserveDeployJob()
+	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+	_ = http.NewResponseController(w).Flush()
+	if started {
+		go a.runDeployJob(job)
 	}
-	http.Redirect(w, r, "/dashboard?msg="+url.QueryEscape("Traefik redeployed."), http.StatusSeeOther)
 }
 
 func (a *App) handleStopTraefik(w http.ResponseWriter, r *http.Request) {
@@ -67,14 +72,14 @@ func (a *App) handleStopTraefik(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/dashboard?msg="+url.QueryEscape("Traefik container stopped and deleted."), http.StatusSeeOther)
 }
 
-func (a *App) redeploy(r *http.Request) error {
+func (a *App) redeploy(parent context.Context) error {
 	cfg := a.currentConfig()
 	if err := a.writeCurrentTraefikConfig(); err != nil {
 		return err
 	}
 	// Replacing Traefik can disconnect the very request that started it.
 	// Finish the operation even if the browser or reverse proxy goes away.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 4*time.Minute)
 	defer cancel()
 	if err := a.deployTraefik(ctx, cfg); err != nil {
 		_, _ = a.jsonStore.UpdateConfig(func(current *models.Config) error {

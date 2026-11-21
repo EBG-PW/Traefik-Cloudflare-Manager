@@ -29,7 +29,8 @@
         {{if .Message}}<div class="alert alert-success">{{.Message}}</div>{{end}}
         {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
         {{if .InsecureHTTP}}<div class="alert alert-warning">This LAN session uses unencrypted HTTP. Passwords and session cookies can be observed by other devices on the network. Prefer the HTTPS manager domain.</div>{{end}}
-        {{if .Config.LastDeployError}}<div class="alert alert-danger">Last deploy error: {{.Config.LastDeployError}}</div>{{end}}
+        {{if .Config.LastDeployError}}<div class="alert alert-danger" id="last-deploy-error">Last deploy error: {{.Config.LastDeployError}}</div>{{end}}
+        <div class="alert alert-info d-none" id="traefik-deploy-status" role="status" aria-live="polite"></div>
 
         <div class="card mb-3">
           <div class="card-body control-strip">
@@ -660,6 +661,75 @@ async function proxyAction(action, host) {
     }
   }
 }
+
+let deployBusy = false;
+let deployPollTimer;
+let deployRequestGeneration = 0;
+const deployStatus = document.getElementById('traefik-deploy-status');
+const deployForms = ['traefik-update-form', 'traefik-start-form', 'traefik-redeploy-form'];
+
+function showDeployStatus(state, message) {
+  deployBusy = state === 'running';
+  deployStatus.textContent = message || '';
+  deployStatus.className = `alert alert-${state === 'error' ? 'danger' : state === 'done' ? 'success' : 'info'}${message ? '' : ' d-none'}`;
+  [...deployForms, 'traefik-stop-form'].forEach(id => {
+    document.getElementById(id).querySelector('button').disabled = deployBusy;
+  });
+  if (state === 'running' || state === 'done') {
+    document.getElementById('last-deploy-error')?.classList.add('d-none');
+  }
+}
+
+async function pollDeploy() {
+  clearTimeout(deployPollTimer);
+  const generation = deployRequestGeneration;
+  try {
+    const response = await fetch('/api/traefik/redeploy', {cache: 'no-store', signal: AbortSignal.timeout(8000)});
+    if (generation !== deployRequestGeneration) return;
+    if (response.status === 401 || response.redirected) {
+      showDeployStatus('error', 'Sign in again to check the deployment status.');
+      return;
+    }
+    if (!response.ok) throw new Error('Status unavailable');
+    const job = await response.json();
+    if (generation !== deployRequestGeneration) return;
+    showDeployStatus(job.state, job.message);
+    if (job.state !== 'running') return;
+  } catch (_) {
+    if (generation !== deployRequestGeneration) return;
+    showDeployStatus('running', 'Waiting for the manager to reconnect. Deployment continues in the background.');
+  }
+  deployPollTimer = setTimeout(pollDeploy, 2000);
+}
+
+deployForms.forEach(id => {
+  document.getElementById(id).addEventListener('submit', async event => {
+    event.preventDefault();
+    if (deployBusy) return;
+    deployRequestGeneration++;
+    clearTimeout(deployPollTimer);
+    showDeployStatus('running', 'Starting Traefik deployment…');
+    try {
+      const response = await fetch('/api/traefik/redeploy', {method: 'POST', signal: AbortSignal.timeout(8000)});
+      if (response.redirected) {
+        showDeployStatus('error', 'Sign in again to deploy Traefik.');
+        return;
+      }
+      const job = await response.json();
+      if (!response.ok) {
+        showDeployStatus('error', job.error || 'Could not start deployment.');
+        return;
+      }
+      showDeployStatus(job.state, job.message);
+    } catch (_) {
+      // The acknowledgement may have been lost during the proxy restart.
+      // Check the existing job instead of submitting another deployment.
+      showDeployStatus('running', 'Checking deployment status after the connection was interrupted…');
+    }
+    deployPollTimer = setTimeout(pollDeploy, 1500);
+  });
+});
+pollDeploy();
 
 function connectStats() {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';

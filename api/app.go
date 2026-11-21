@@ -61,6 +61,7 @@ type App struct {
 	reconcilerStarted bool
 	reconcileMu       sync.Mutex
 	traefikMu         sync.Mutex
+	deployJob         *deployJob
 	statsMu           sync.Mutex
 	statsHist         []statsSample
 	versionMu         sync.Mutex

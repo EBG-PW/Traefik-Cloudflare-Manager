@@ -60,15 +60,22 @@ func (a *App) handleAPIStatsWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAPIRedeploy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, a.deployStatus())
+		return
+	}
 	if r.Method != http.MethodPost {
 		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if err := a.redeploy(r); err != nil {
-		apiError(w, http.StatusInternalServerError, err.Error())
-		return
+	job, started := a.reserveDeployJob()
+	writeJSON(w, http.StatusAccepted, a.deployStatus())
+	// Deliver the acknowledgement before replacing the proxy carrying it.
+	_ = http.NewResponseController(w).Flush()
+	if started {
+		go a.runDeployJob(job)
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "redeployed"})
 }
 
 func (a *App) handleAPIStopTraefik(w http.ResponseWriter, r *http.Request) {

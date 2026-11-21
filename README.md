@@ -57,6 +57,13 @@ The separate native Traefik dashboard host retains its own Basic Auth middleware
 - `DELETE /api/proxies/{host}`
 - `GET /api/traefik/stats`
 - `POST /api/traefik/redeploy`
+- `GET /api/traefik/redeploy`
+
+Redeploy returns `202 Accepted` immediately with a background job's `state` and
+`message`. Poll the GET endpoint for `running`, `done`, or `error` (`idle` before
+the first job). Repeated POSTs while a deployment runs share the current job.
+The dashboard watches this status without reloading and reconnects automatically
+while Traefik restarts. Deployment continues if the browser disconnects.
 
 Example proxy body:
 

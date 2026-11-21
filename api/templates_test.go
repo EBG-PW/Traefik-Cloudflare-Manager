@@ -101,6 +101,16 @@ func TestDashboardInlineJavaScriptSyntax(t *testing.T) {
 	}
 }
 
+func TestDashboardDeploymentReconnectsWithoutNavigation(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+	if output, err := exec.Command(node, "testdata/deploy-ui.cjs").CombinedOutput(); err != nil {
+		t.Fatalf("deployment UI regression: %v\n%s", err, output)
+	}
+}
+
 func TestDashboardEscapesDynamicHTMLValues(t *testing.T) {
 	app := &App{}
 	recorder := httptest.NewRecorder()
