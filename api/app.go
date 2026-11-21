@@ -60,6 +60,7 @@ type App struct {
 	proxyChecks       map[string]bool
 	reconcilerStarted bool
 	reconcileMu       sync.Mutex
+	traefikMu         sync.Mutex
 	statsMu           sync.Mutex
 	statsHist         []statsSample
 	versionMu         sync.Mutex
@@ -239,6 +240,8 @@ func (a *App) render(w http.ResponseWriter, name string, data any) {
 }
 
 func (a *App) deployTraefik(ctx context.Context, cfg *models.Config) error {
+	a.traefikMu.Lock()
+	defer a.traefikMu.Unlock()
 	if err := a.docker.Ping(ctx); err != nil {
 		return err
 	}
@@ -254,11 +257,7 @@ func (a *App) deployTraefik(ctx context.Context, cfg *models.Config) error {
 	if hostname != "" {
 		_ = a.docker.ConnectNetwork(ctx, a.store.DockerNetwork, hostname, "traefik-cloudflare-manager", "manager")
 	}
-	if err := a.docker.PullImage(ctx, a.store.TraefikImage); err != nil {
-		return err
-	}
-	_ = a.docker.RemoveContainer(ctx, "traefik")
-	return a.docker.CreateTraefik(ctx, cfg, a.store)
+	return a.docker.ReplaceTraefik(ctx, cfg, a.store)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

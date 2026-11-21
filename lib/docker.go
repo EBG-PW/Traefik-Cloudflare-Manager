@@ -237,16 +237,38 @@ func (d *DockerClient) PullImage(ctx context.Context, image string) error {
 		path += "&tag=" + url.QueryEscape(tag)
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://docker/"+DockerAPIVersion+path, nil)
-	resp, err := d.http.Do(req)
+	// Pulls can take longer than the ordinary Docker request timeout. The
+	// deployment context supplies the overall deadline instead.
+	client := &http.Client{Transport: d.http.Transport}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("pull %s returned %s", image, resp.Status)
 	}
-	return nil
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var progress struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err := decoder.Decode(&progress); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("pull %s: %w", image, err)
+		}
+		if progress.Error == "" {
+			progress.Error = progress.ErrorDetail.Message
+		}
+		if progress.Error != "" {
+			return fmt.Errorf("pull %s: %s", image, progress.Error)
+		}
+	}
 }
 
 func (d *DockerClient) RemoveContainer(ctx context.Context, name string) error {
@@ -264,6 +286,30 @@ func (d *DockerClient) RemoveContainer(ctx context.Context, name string) error {
 }
 
 func (d *DockerClient) CreateTraefik(ctx context.Context, cfg *models.Config, store *models.Store) error {
+	payload, err := d.traefikPayload(ctx, cfg, store)
+	if err != nil {
+		return err
+	}
+	return d.startTraefik(ctx, payload)
+}
+
+// ReplaceTraefik resolves the shared data mount and pulls the image before
+// removing the running container, so preparation failures leave it available.
+func (d *DockerClient) ReplaceTraefik(ctx context.Context, cfg *models.Config, store *models.Store) error {
+	payload, err := d.traefikPayload(ctx, cfg, store)
+	if err != nil {
+		return err
+	}
+	if err := d.PullImage(ctx, store.TraefikImage); err != nil {
+		return err
+	}
+	if err := d.RemoveContainer(ctx, "traefik"); err != nil {
+		return err
+	}
+	return d.startTraefik(ctx, payload)
+}
+
+func (d *DockerClient) traefikPayload(ctx context.Context, cfg *models.Config, store *models.Store) (map[string]any, error) {
 	acmeResolvers := strings.TrimSpace(store.ACMEDNSResolvers)
 	if acmeResolvers == "" {
 		acmeResolvers = "1.1.1.1:53,8.8.8.8:53"
@@ -295,7 +341,7 @@ func (d *DockerClient) CreateTraefik(ctx context.Context, cfg *models.Config, st
 	} else {
 		dataMount, err := d.ResolveSelfDataMount(ctx, store.DataDir)
 		if err != nil {
-			return fmt.Errorf("resolve data mount: %w", err)
+			return nil, fmt.Errorf("resolve data mount: %w", err)
 		}
 		switch dataMount.Type {
 		case "volume":
@@ -305,7 +351,7 @@ func (d *DockerClient) CreateTraefik(ctx context.Context, cfg *models.Config, st
 		default:
 			abs, err := filepath.Abs(store.DataDir)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			binds = append(binds, abs+":/app/data")
 		}
@@ -339,6 +385,10 @@ func (d *DockerClient) CreateTraefik(ctx context.Context, cfg *models.Config, st
 			"EndpointsConfig": map[string]any{store.DockerNetwork: map[string]any{}},
 		},
 	}
+	return payload, nil
+}
+
+func (d *DockerClient) startTraefik(ctx context.Context, payload map[string]any) error {
 	if err := d.dockerJSON(ctx, http.MethodPost, "/containers/create?name=traefik", payload, nil, http.StatusCreated); err != nil {
 		return err
 	}

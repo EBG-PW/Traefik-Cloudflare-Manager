@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"traefik-cloudflare-manager/lib"
 	"traefik-cloudflare-manager/models"
@@ -70,7 +72,11 @@ func (a *App) redeploy(r *http.Request) error {
 	if err := a.writeCurrentTraefikConfig(); err != nil {
 		return err
 	}
-	if err := a.deployTraefik(r.Context(), cfg); err != nil {
+	// Replacing Traefik can disconnect the very request that started it.
+	// Finish the operation even if the browser or reverse proxy goes away.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 4*time.Minute)
+	defer cancel()
+	if err := a.deployTraefik(ctx, cfg); err != nil {
 		_, _ = a.jsonStore.UpdateConfig(func(current *models.Config) error {
 			current.LastDeployError = err.Error()
 			return nil
@@ -86,6 +92,8 @@ func (a *App) redeploy(r *http.Request) error {
 }
 
 func (a *App) stopTraefik(r *http.Request) error {
+	a.traefikMu.Lock()
+	defer a.traefikMu.Unlock()
 	if err := a.docker.RemoveContainer(r.Context(), "traefik"); err != nil {
 		return err
 	}
